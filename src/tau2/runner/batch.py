@@ -423,6 +423,7 @@ def run_single_task(
             responses_tool = {
                 "type": "function",
                 **chat_completions_tool["function"],
+                "strict": True,
             }
             tools.append(responses_tool)
 
