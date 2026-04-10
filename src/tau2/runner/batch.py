@@ -428,9 +428,13 @@ def run_single_task(
             tools.append(responses_tool)
 
         to_dump["responses_create_params"] = {
-            "input": [],
+            "input": [
+                {"role": "system", "content": m.content} for m in orchestrator.agent.get_init_state().system_messages
+            ],
             "tools": tools,
         }
+        # TODO eventually we may need/want this
+        # to_dump["policy"] = orchestrator.environment.get_policy()
 
         output_path = Path(f"nemo_gym_data/{config.domain}/{task.id}.json")
         output_path.parent.mkdir(parents=True, exist_ok=True)
