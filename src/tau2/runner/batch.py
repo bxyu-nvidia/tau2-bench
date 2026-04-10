@@ -383,11 +383,6 @@ def run_single_task(
     to_dump["config"] = to_dump["config"].model_dump()
     to_dump["task"] = to_dump["task"].model_dump()
     to_dump["save_dir"] = None
-    output_path = Path(f"nemo_gym_data/{config.domain}/{task.id}.json")
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    with output_path.open("w") as f:
-        json.dump(to_dump, f, indent=4)
-    return
 
     simulation_id = str(uuid.uuid4())
     is_voice = isinstance(config, VoiceRunConfig)
@@ -421,6 +416,26 @@ def run_single_task(
             hallucination_feedback=hallucination_feedback,
             audio_taps_dir=taps_dir,
         )
+
+        tools = []
+        for tool in orchestrator.environment.get_tools():
+            chat_completions_tool = tool.openai_schema
+            responses_tool = {
+                "type": "function",
+                **chat_completions_tool["function"],
+            }
+            tools.append(responses_tool)
+
+        to_dump["responses_create_params"] = {
+            "input": [],
+            "tools": tools,
+        }
+
+        output_path = Path(f"nemo_gym_data/{config.domain}/{task.id}.json")
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        with output_path.open("w") as f:
+            json.dump(to_dump, f, indent=4)
+        return
 
         # Layer 1: Run the simulation
         env_kwargs = _build_env_kwargs(config, task) or None
