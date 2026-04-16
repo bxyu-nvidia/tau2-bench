@@ -628,7 +628,7 @@ def run_tasks(
 
     set_global_config_dict(global_config_dict_parser_config=GlobalConfigDictParserConfig(skip_load_from_cli=True, skip_load_from_dotenv=True))
 
-    def _run_tracked(
+    async def _run_tracked(
         task: Task, trial: int, seed: int, progress_str: str
     ) -> SimulationRun:
         """Run a single task with tracking, retry, and hallucination retry."""
@@ -667,7 +667,7 @@ def run_tasks(
             )
 
         try:
-            result = run_with_retry(
+            result = await run_with_retry(
                 _execute,
                 task=task,
                 trial=trial,
@@ -801,13 +801,15 @@ def run_tasks(
             monitor.task_finished(task_key)
             _cleanup_thread_event_loop()
 
+    import asyncio
+    async def _run_outer(args):
+        return await asyncio.gather(
+            *(_run_tracked(*arg) for arg in args)
+        )
+
     executor = ThreadPoolExecutor(max_workers=config.max_concurrency)
-    futures: dict = {}
     try:
-        futures = {executor.submit(_run_tracked, *arg): arg for arg in args}
-        for future in as_completed(futures):
-            result = future.result()
-            simulation_results.simulations.append(result)
+        simulation_results.simulations = asyncio.run(_run_outer(args))
     except KeyboardInterrupt:
         ConsoleDisplay.console.print(
             "\n[bold red]Ctrl+C received — cancelling remaining tasks...[/bold red]"
