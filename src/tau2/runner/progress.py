@@ -16,7 +16,7 @@ from tau2.utils.display import ConsoleDisplay, Text
 from tau2.utils.utils import get_now
 
 
-def run_with_retry(
+async def run_with_retry(
     run_fn: Callable[[], SimulationRun],
     task: Task,
     trial: int,
@@ -72,8 +72,7 @@ def run_with_retry(
                     on_retry()
                 time.sleep(retry_delay)
 
-            from asyncio import run
-            simulation = run(run_fn())
+            simulation = await run_fn()
             simulation.trial = trial
 
             if console_display:
