@@ -389,6 +389,7 @@ def build_text_orchestrator(
         environment=environment,
         task=task,
         max_steps=config.effective_max_steps,
+        turns_remaining_interval=config.turns_remaining_interval,
         max_errors=config.max_errors,
         seed=seed,
         solo_mode=solo_mode,

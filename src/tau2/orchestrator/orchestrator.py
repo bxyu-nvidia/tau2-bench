@@ -49,6 +49,7 @@ class Role(str, Enum):
 DEFAULT_FIRST_AGENT_MESSAGE = AssistantMessage(
     role="assistant", content="Hi! How can I help you today?", cost=0.0
 )
+TURNS_REMAINING_NOTICE_TEMPLATE = "You have {remaining_turns} turns remaining."
 
 # Type variables for generic orchestrators
 # Base types for BaseOrchestrator - unbound to allow both half-duplex and full-duplex
@@ -405,6 +406,7 @@ class Orchestrator(BaseOrchestrator[AgentT, UserT, Message]):
         environment: Environment,
         task: Task,
         max_steps: int = 100,
+        turns_remaining_interval: int = 1,
         max_errors: int = 10,
         seed: Optional[int] = None,
         solo_mode: bool = False,
@@ -426,6 +428,8 @@ class Orchestrator(BaseOrchestrator[AgentT, UserT, Message]):
             environment: The environment instance that handles tool execution and maintains state.
             task: The task specification containing initial state, goals, and evaluation criteria.
             max_steps: Maximum number of simulation steps before termination. Defaults to 100.
+            turns_remaining_interval: Append turns-remaining notice to user messages every Nth
+                user turn. Must be >= 1. Defaults to 1.
             max_errors: Maximum number of tool execution errors before termination. Defaults to 10.
             seed: Optional random seed for reproducibility of agent and user behavior. Defaults to None.
             solo_mode: If True, agent operates without user interaction (only tool calls allowed).
@@ -454,6 +458,11 @@ class Orchestrator(BaseOrchestrator[AgentT, UserT, Message]):
         self.trajectory: list[Message] = []
         self.solo_mode = solo_mode
         self.validate_communication = validate_communication
+        if turns_remaining_interval <= 0:
+            raise ValueError(
+                f"turns_remaining_interval must be >= 1, got {turns_remaining_interval}"
+            )
+        self.turns_remaining_interval = turns_remaining_interval
 
         # Turn-based routing state
         self.from_role: Optional[Role] = None
@@ -737,6 +746,38 @@ class Orchestrator(BaseOrchestrator[AgentT, UserT, Message]):
                     f"{self.from_role.value} can only send tool calls. {self.message}"
                 )
 
+    def _count_user_visible_turns(self) -> int:
+        """Count user turns that are visible to the agent (non-tool user messages)."""
+        return sum(
+            1
+            for msg in self.trajectory
+            if isinstance(msg, UserMessage) and not msg.is_tool_call()
+        )
+
+    def _should_append_turns_remaining_notice(self, user_turn_idx: int) -> bool:
+        """Return True when this user turn should include turns-remaining notice."""
+        return user_turn_idx % self.turns_remaining_interval == 0
+
+    def _append_turns_remaining_notice(self, message: UserMessage) -> UserMessage:
+        """Append turns-remaining notice to the user message sent to the agent."""
+        user_turn_idx = self._count_user_visible_turns()
+        if not self._should_append_turns_remaining_notice(user_turn_idx):
+            return message
+
+        remaining_turns = max((self.max_steps - self.step_count) // 2, 0)
+        turns_remaining_notice = TURNS_REMAINING_NOTICE_TEMPLATE.format(
+            remaining_turns=remaining_turns
+        )
+
+        patched_message = deepcopy(message)
+        if patched_message.content:
+            patched_message.content = (
+                f"{patched_message.content}\n\n{turns_remaining_notice}"
+            )
+        else:
+            patched_message.content = turns_remaining_notice
+        return patched_message
+
     def _check_termination(self) -> None:
         """
         Check for half-duplex specific termination conditions.
@@ -865,8 +906,12 @@ class Orchestrator(BaseOrchestrator[AgentT, UserT, Message]):
         elif (
             self.from_role == Role.USER or self.from_role == Role.ENV
         ) and self.to_role == Role.AGENT:
+            agent_input_message = self.message
+            if self.from_role == Role.USER and isinstance(self.message, UserMessage):
+                agent_input_message = self._append_turns_remaining_notice(self.message)
+
             agent_msg, self.agent_state = await self.agent.generate_next_message(
-                self.message, self.agent_state
+                agent_input_message, self.agent_state
             )
             # Catch context window exceeded errors -- NeMo Gym OpenAI client will return an empty message
             try:

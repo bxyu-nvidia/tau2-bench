@@ -1,3 +1,4 @@
+import asyncio
 from copy import deepcopy
 from typing import Callable
 
@@ -507,3 +508,165 @@ def test_validate_communication_allows_valid_messages(
     # Should initialize successfully with valid message
     assert orchestrator.done is False
     assert orchestrator.termination_reason is None
+
+
+class _RecordingAsyncAgent:
+    def __init__(self):
+        self.received_messages = []
+
+    def get_init_state(self, message_history=None):
+        return {}
+
+    async def generate_next_message(self, message, state):
+        self.received_messages.append(message)
+        return AssistantMessage(role="assistant", content="ok"), state
+
+    def is_stop(self, message):
+        return False
+
+    def stop(self, message=None, state=None):
+        pass
+
+    def set_seed(self, seed):
+        pass
+
+
+def _make_orchestrator_for_turn_notice_test(
+    domain_name: str,
+    get_environment: Callable[[], Environment],
+    base_task: Task,
+    turns_remaining_interval: int = 1,
+    max_steps: int = 75,
+) -> Orchestrator:
+    return Orchestrator(
+        domain=domain_name,
+        user=DummyUser(),
+        agent=_RecordingAsyncAgent(),
+        environment=get_environment(),
+        task=base_task,
+        max_steps=max_steps,
+        turns_remaining_interval=turns_remaining_interval,
+    )
+
+
+def test_turns_remaining_default_injects_every_user_turn(
+    domain_name: str,
+    get_environment: Callable[[], Environment],
+    base_task: Task,
+):
+    orchestrator = _make_orchestrator_for_turn_notice_test(
+        domain_name=domain_name,
+        get_environment=get_environment,
+        base_task=base_task,
+    )
+    user_message = UserMessage(role="user", content="Please search for the order.")
+    orchestrator.trajectory = [user_message]
+    orchestrator.step_count = 20
+
+    patched = orchestrator._append_turns_remaining_notice(user_message)
+    assert (
+        patched.content
+        == "Please search for the order.\n\nYou have 27 turns remaining."
+    )
+
+
+def test_turns_remaining_interval_injects_only_on_nth_user_turn(
+    domain_name: str,
+    get_environment: Callable[[], Environment],
+    base_task: Task,
+):
+    orchestrator = _make_orchestrator_for_turn_notice_test(
+        domain_name=domain_name,
+        get_environment=get_environment,
+        base_task=base_task,
+        turns_remaining_interval=4,
+    )
+    orchestrator.step_count = 20
+
+    third_turn = UserMessage(role="user", content="third")
+    orchestrator.trajectory = [
+        UserMessage(role="user", content="first"),
+        UserMessage(role="user", content="second"),
+        third_turn,
+    ]
+    untouched = orchestrator._append_turns_remaining_notice(third_turn)
+    assert untouched.content == "third"
+
+    fourth_turn = UserMessage(role="user", content="fourth")
+    orchestrator.trajectory = [
+        UserMessage(role="user", content="first"),
+        UserMessage(role="user", content="second"),
+        UserMessage(role="user", content="third"),
+        fourth_turn,
+    ]
+    patched = orchestrator._append_turns_remaining_notice(fourth_turn)
+    assert patched.content == "fourth\n\nYou have 27 turns remaining."
+
+
+def test_turns_remaining_not_appended_on_environment_turns(
+    domain_name: str,
+    get_environment: Callable[[], Environment],
+    base_task: Task,
+):
+    from tau2.data_model.message import ToolMessage
+
+    orchestrator = _make_orchestrator_for_turn_notice_test(
+        domain_name=domain_name,
+        get_environment=get_environment,
+        base_task=base_task,
+    )
+    orchestrator.from_role = Role.ENV
+    orchestrator.to_role = Role.AGENT
+    orchestrator.message = ToolMessage(
+        id="call_1",
+        role="tool",
+        content="env output",
+        requestor="assistant",
+    )
+    orchestrator.agent_state = {}
+
+    original_append = orchestrator._append_turns_remaining_notice
+
+    def _fail_if_called(_message):
+        raise AssertionError("turns-remaining notice should not be appended on env turns")
+
+    orchestrator._append_turns_remaining_notice = _fail_if_called
+    asyncio.run(orchestrator.step())
+    orchestrator._append_turns_remaining_notice = original_append
+
+    recorded = orchestrator.agent.received_messages[-1]
+    assert isinstance(recorded, ToolMessage)
+    assert recorded.content == "env output"
+
+
+def test_turns_remaining_clamped_to_zero(
+    domain_name: str,
+    get_environment: Callable[[], Environment],
+    base_task: Task,
+):
+    orchestrator = _make_orchestrator_for_turn_notice_test(
+        domain_name=domain_name,
+        get_environment=get_environment,
+        base_task=base_task,
+        max_steps=75,
+    )
+    user_message = UserMessage(role="user", content="status?")
+    orchestrator.trajectory = [user_message]
+    orchestrator.step_count = 200
+
+    patched = orchestrator._append_turns_remaining_notice(user_message)
+    assert patched.content == "status?\n\nYou have 0 turns remaining."
+
+
+def test_turns_remaining_interval_must_be_positive(
+    domain_name: str,
+    get_environment: Callable[[], Environment],
+    base_task: Task,
+):
+    with pytest.raises(ValueError, match="turns_remaining_interval must be >= 1"):
+        _make_orchestrator_for_turn_notice_test(
+            domain_name=domain_name,
+            get_environment=get_environment,
+            base_task=base_task,
+            turns_remaining_interval=0,
+        )

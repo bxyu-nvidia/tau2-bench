@@ -539,6 +539,14 @@ class TextRunConfig(BaseRunConfig):
             default=DEFAULT_MAX_STEPS,
         ),
     ]
+    turns_remaining_interval: Annotated[
+        int,
+        Field(
+            description="Append turns-remaining notice to user messages every Nth user turn. Must be >= 1.",
+            default=1,
+            ge=1,
+        ),
+    ]
     enforce_communication_protocol: Annotated[
         bool,
         Field(
