@@ -520,11 +520,13 @@ def test_validate_communication_allows_valid_messages(
 class _RecordingAsyncAgent:
     def __init__(self, next_message: AssistantMessage | None = None):
         self.received_messages = []
+        self.init_message_history = []
         self.next_message = next_message or AssistantMessage(
             role="assistant", content="ok"
         )
 
     def get_init_state(self, message_history=None):
+        self.init_message_history = list(message_history or [])
         return {}
 
     async def generate_next_message(self, message, state):
@@ -681,7 +683,7 @@ def test_agent_steps_remaining_appended_to_tool_message_to_agent(
     assert orchestrator.agent_steps_count == 2
 
 
-def test_agent_steps_remaining_notice_not_persisted_in_user_message(
+def test_agent_steps_remaining_notice_persisted_only_in_agent_messages_for_user_message(
     domain_name: str,
     get_environment: Callable[[], Environment],
     base_task: Task,
@@ -713,13 +715,17 @@ def test_agent_steps_remaining_notice_not_persisted_in_user_message(
 
     simulation_run = orchestrator._finalize()
     persisted_contents = [message.content or "" for message in simulation_run.messages]
+    agent_contents = [
+        message.content or "" for message in simulation_run.agent_messages
+    ]
     assert "hello" in persisted_contents
     assert all(
         "ENVIRONMENT REMINDER" not in content for content in persisted_contents
     )
+    assert any("ENVIRONMENT REMINDER" in content for content in agent_contents)
 
 
-def test_agent_steps_remaining_notice_not_persisted_in_tool_message(
+def test_agent_steps_remaining_notice_persisted_only_in_agent_messages_for_tool_message(
     domain_name: str,
     get_environment: Callable[[], Environment],
     base_task: Task,
@@ -756,10 +762,101 @@ def test_agent_steps_remaining_notice_not_persisted_in_tool_message(
 
     simulation_run = orchestrator._finalize()
     persisted_contents = [message.content or "" for message in simulation_run.messages]
+    agent_contents = [
+        message.content or "" for message in simulation_run.agent_messages
+    ]
     assert "env output" in persisted_contents
     assert all(
         "ENVIRONMENT REMINDER" not in content for content in persisted_contents
     )
+    assert any("ENVIRONMENT REMINDER" in content for content in agent_contents)
+
+
+def test_agent_messages_preserve_previous_reminders(
+    domain_name: str,
+    get_environment: Callable[[], Environment],
+    base_task: Task,
+):
+    orchestrator = _make_orchestrator_for_turn_notice_test(
+        domain_name=domain_name,
+        get_environment=get_environment,
+        base_task=base_task,
+        max_agent_steps=3,
+    )
+    first_message = deepcopy(DEFAULT_FIRST_AGENT_MESSAGE)
+    orchestrator.trajectory = [
+        first_message,
+        UserMessage(role="user", content="first user turn"),
+        AssistantMessage(role="assistant", content="first assistant turn"),
+        UserMessage(role="user", content="second user turn"),
+        AssistantMessage(role="assistant", content="second assistant turn"),
+    ]
+    orchestrator.step_count = 4
+    orchestrator.agent_steps_count = 2
+    orchestrator._run_start_time = "2026-05-05T00:00:00"
+    orchestrator._run_start_perf = 0.0
+    orchestrator.termination_reason = TerminationReason.MAX_AGENT_STEPS
+
+    simulation_run = orchestrator._finalize()
+
+    agent_contents = [
+        message.content or "" for message in simulation_run.agent_messages
+    ]
+    assert (
+        "first user turn\n\nENVIRONMENT REMINDER: You have 3 turns left to complete the task."
+        in agent_contents
+    )
+    assert (
+        "second user turn\n\nENVIRONMENT REMINDER: You have 2 turns left to complete the task."
+        in agent_contents
+    )
+    assert all(
+        "ENVIRONMENT REMINDER" not in (message.content or "")
+        for message in simulation_run.messages
+    )
+
+
+def test_agent_init_history_reconstructs_reminders_without_user_leak(
+    domain_name: str,
+    user_simulator: UserSimulator,
+    get_environment: Callable[[], Environment],
+    base_task: Task,
+):
+    task = deepcopy(base_task)
+    task.initial_state = InitialState(
+        message_history=[
+            deepcopy(DEFAULT_FIRST_AGENT_MESSAGE),
+            UserMessage(role="user", content="first user turn"),
+            AssistantMessage(role="assistant", content="first assistant turn"),
+            UserMessage(role="user", content="second user turn"),
+        ],
+        variables={},
+        state={},
+    )
+    agent = _RecordingAsyncAgent()
+    orchestrator = Orchestrator(
+        domain=domain_name,
+        user=user_simulator,
+        agent=agent,
+        environment=get_environment(),
+        task=task,
+        max_agent_steps=3,
+    )
+
+    orchestrator.initialize()
+
+    agent_contents = [
+        message.content or "" for message in agent.init_message_history
+    ]
+    user_contents = [message.content or "" for message in orchestrator.user_state.messages]
+
+    assert orchestrator.agent_steps_count == 1
+    assert (
+        "first user turn\n\nENVIRONMENT REMINDER: You have 3 turns left to complete the task."
+        in agent_contents
+    )
+    assert not any("second user turn" in content for content in agent_contents)
+    assert all("ENVIRONMENT REMINDER" not in content for content in user_contents)
 
 
 def test_agent_steps_remaining_appended_to_last_multi_tool_message(

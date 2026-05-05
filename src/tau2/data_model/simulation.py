@@ -1289,6 +1289,12 @@ class SimulationRun(BaseModel):
         "which derives messages from ticks when this field is None.",
         default=None,
     )
+    agent_messages: Optional[list[Message]] = Field(
+        description="Agent-visible message history for half-duplex simulations. "
+        "This may include environment reminders injected into messages sent to "
+        "the agent while messages remains the canonical user-clean transcript.",
+        default=None,
+    )
     ticks: Optional[list[Tick]] = Field(
         description="The ticks of the simulation. Only available in full-duplex mode.",
         default=None,
