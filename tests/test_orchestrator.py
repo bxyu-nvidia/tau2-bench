@@ -681,6 +681,87 @@ def test_agent_steps_remaining_appended_to_tool_message_to_agent(
     assert orchestrator.agent_steps_count == 2
 
 
+def test_agent_steps_remaining_notice_not_persisted_in_user_message(
+    domain_name: str,
+    get_environment: Callable[[], Environment],
+    base_task: Task,
+):
+    orchestrator = _make_orchestrator_for_turn_notice_test(
+        domain_name=domain_name,
+        get_environment=get_environment,
+        base_task=base_task,
+        max_agent_steps=3,
+    )
+    user_message = UserMessage(role="user", content="hello")
+    orchestrator.from_role = Role.USER
+    orchestrator.to_role = Role.AGENT
+    orchestrator.message = user_message
+    orchestrator.trajectory = [user_message]
+    orchestrator.agent_steps_count = 1
+    orchestrator.agent_state = {}
+
+    asyncio.run(orchestrator.step())
+
+    recorded = orchestrator.agent.received_messages[-1]
+    assert "ENVIRONMENT REMINDER" in recorded.content
+    assert orchestrator.trajectory[0].content == "hello"
+
+    orchestrator.step_count = 1
+    orchestrator._run_start_time = "2026-05-05T00:00:00"
+    orchestrator._run_start_perf = 0.0
+    orchestrator.termination_reason = TerminationReason.MAX_AGENT_STEPS
+
+    simulation_run = orchestrator._finalize()
+    persisted_contents = [message.content or "" for message in simulation_run.messages]
+    assert "hello" in persisted_contents
+    assert all(
+        "ENVIRONMENT REMINDER" not in content for content in persisted_contents
+    )
+
+
+def test_agent_steps_remaining_notice_not_persisted_in_tool_message(
+    domain_name: str,
+    get_environment: Callable[[], Environment],
+    base_task: Task,
+):
+    orchestrator = _make_orchestrator_for_turn_notice_test(
+        domain_name=domain_name,
+        get_environment=get_environment,
+        base_task=base_task,
+        max_agent_steps=3,
+    )
+    tool_message = ToolMessage(
+        id="call_1",
+        role="tool",
+        content="env output",
+        requestor="assistant",
+    )
+    orchestrator.from_role = Role.ENV
+    orchestrator.to_role = Role.AGENT
+    orchestrator.message = tool_message
+    orchestrator.trajectory = [tool_message]
+    orchestrator.agent_steps_count = 1
+    orchestrator.agent_state = {}
+
+    asyncio.run(orchestrator.step())
+
+    recorded = orchestrator.agent.received_messages[-1]
+    assert "ENVIRONMENT REMINDER" in recorded.content
+    assert orchestrator.trajectory[0].content == "env output"
+
+    orchestrator.step_count = 1
+    orchestrator._run_start_time = "2026-05-05T00:00:00"
+    orchestrator._run_start_perf = 0.0
+    orchestrator.termination_reason = TerminationReason.MAX_AGENT_STEPS
+
+    simulation_run = orchestrator._finalize()
+    persisted_contents = [message.content or "" for message in simulation_run.messages]
+    assert "env output" in persisted_contents
+    assert all(
+        "ENVIRONMENT REMINDER" not in content for content in persisted_contents
+    )
+
+
 def test_agent_steps_remaining_appended_to_last_multi_tool_message(
     domain_name: str,
     get_environment: Callable[[], Environment],
