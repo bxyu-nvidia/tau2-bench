@@ -188,6 +188,7 @@ def get_info(config: RunConfig, **overrides) -> Info:
         git_commit=get_commit_hash(),
         num_trials=config.num_trials,
         max_steps=config.effective_max_steps,
+        max_agent_steps=getattr(config, "max_agent_steps", None),
         max_errors=config.max_errors,
         user_info=user_info,
         agent_info=agent_info,

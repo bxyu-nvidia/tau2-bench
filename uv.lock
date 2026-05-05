@@ -3600,7 +3600,6 @@ dependencies = [
     { name = "httpx" },
     { name = "litellm" },
     { name = "loguru" },
-    { name = "nemo-gym" },
     { name = "numpy" },
     { name = "pandas" },
     { name = "psutil" },
@@ -3665,6 +3664,9 @@ knowledge = [
     { name = "openai" },
     { name = "rank-bm25" },
 ]
+nemo-gym = [
+    { name = "nemo-gym" },
+]
 voice = [
     { name = "aiohttp" },
     { name = "aws-sdk-bedrock-runtime" },
@@ -3708,7 +3710,7 @@ requires-dist = [
     { name = "livekit-plugins-openai", marker = "extra == 'voice'", specifier = ">=1.5.0" },
     { name = "loguru", specifier = ">=0.7.3" },
     { name = "matplotlib", marker = "extra == 'experiments'", specifier = ">=3.10.1" },
-    { name = "nemo-gym", git = "https://github.com/NVIDIA-NeMo/Gym" },
+    { name = "nemo-gym", marker = "extra == 'nemo-gym'", git = "https://github.com/NVIDIA-NeMo/Gym" },
     { name = "numpy", specifier = ">=1.24.0" },
     { name = "openai", marker = "extra == 'knowledge'", specifier = ">=1.0.0" },
     { name = "pandas", specifier = ">=2.2.3" },
@@ -3737,7 +3739,7 @@ requires-dist = [
     { name = "uvicorn", specifier = ">=0.34.0" },
     { name = "websockets", marker = "extra == 'voice'", specifier = ">=13.0" },
 ]
-provides-extras = ["voice", "knowledge", "gym", "dev", "experiments", "all"]
+provides-extras = ["nemo-gym", "voice", "knowledge", "gym", "dev", "experiments", "all"]
 
 [[package]]
 name = "tenacity"

@@ -5,7 +5,14 @@ from typing import Callable
 import pytest
 
 from tau2.agent.llm_agent import LLMAgent, LLMSoloAgent
-from tau2.data_model.message import AssistantMessage, UserMessage
+from tau2.data_model.message import (
+    AssistantMessage,
+    MultiToolMessage,
+    ToolCall,
+    ToolMessage,
+    UserMessage,
+)
+from tau2.data_model.simulation import TerminationReason
 from tau2.data_model.tasks import EnvAssertion, InitialState, Task
 from tau2.environment.environment import Environment
 from tau2.orchestrator.orchestrator import (
@@ -511,15 +518,18 @@ def test_validate_communication_allows_valid_messages(
 
 
 class _RecordingAsyncAgent:
-    def __init__(self):
+    def __init__(self, next_message: AssistantMessage | None = None):
         self.received_messages = []
+        self.next_message = next_message or AssistantMessage(
+            role="assistant", content="ok"
+        )
 
     def get_init_state(self, message_history=None):
         return {}
 
     async def generate_next_message(self, message, state):
         self.received_messages.append(message)
-        return AssistantMessage(role="assistant", content="ok"), state
+        return self.next_message, state
 
     def is_stop(self, message):
         return False
@@ -536,20 +546,23 @@ def _make_orchestrator_for_turn_notice_test(
     get_environment: Callable[[], Environment],
     base_task: Task,
     turns_remaining_interval: int = 1,
+    max_agent_steps: int | None = 5,
     max_steps: int = 75,
+    next_agent_message: AssistantMessage | None = None,
 ) -> Orchestrator:
     return Orchestrator(
         domain=domain_name,
         user=DummyUser(),
-        agent=_RecordingAsyncAgent(),
+        agent=_RecordingAsyncAgent(next_agent_message),
         environment=get_environment(),
         task=base_task,
         max_steps=max_steps,
+        max_agent_steps=max_agent_steps,
         turns_remaining_interval=turns_remaining_interval,
     )
 
 
-def test_turns_remaining_default_injects_every_user_turn(
+def test_agent_steps_remaining_default_injects_every_user_turn(
     domain_name: str,
     get_environment: Callable[[], Environment],
     base_task: Task,
@@ -561,16 +574,16 @@ def test_turns_remaining_default_injects_every_user_turn(
     )
     user_message = UserMessage(role="user", content="Please search for the order.")
     orchestrator.trajectory = [user_message]
-    orchestrator.step_count = 20
+    orchestrator.agent_steps_count = 2
 
-    patched = orchestrator._append_turns_remaining_notice(user_message)
+    patched = orchestrator._append_agent_steps_remaining_notice(user_message)
     assert (
         patched.content
-        == "Please search for the order.\n\nYou have 27 turns remaining."
+        == "Please search for the order.\n\nENVIRONMENT REMINDER: You have 3 turns left to complete the task."
     )
 
 
-def test_turns_remaining_interval_injects_only_on_nth_user_turn(
+def test_agent_steps_remaining_interval_injects_only_on_nth_user_turn(
     domain_name: str,
     get_environment: Callable[[], Environment],
     base_task: Task,
@@ -581,7 +594,7 @@ def test_turns_remaining_interval_injects_only_on_nth_user_turn(
         base_task=base_task,
         turns_remaining_interval=4,
     )
-    orchestrator.step_count = 20
+    orchestrator.agent_steps_count = 2
 
     third_turn = UserMessage(role="user", content="third")
     orchestrator.trajectory = [
@@ -589,7 +602,7 @@ def test_turns_remaining_interval_injects_only_on_nth_user_turn(
         UserMessage(role="user", content="second"),
         third_turn,
     ]
-    untouched = orchestrator._append_turns_remaining_notice(third_turn)
+    untouched = orchestrator._append_agent_steps_remaining_notice(third_turn)
     assert untouched.content == "third"
 
     fourth_turn = UserMessage(role="user", content="fourth")
@@ -599,21 +612,51 @@ def test_turns_remaining_interval_injects_only_on_nth_user_turn(
         UserMessage(role="user", content="third"),
         fourth_turn,
     ]
-    patched = orchestrator._append_turns_remaining_notice(fourth_turn)
-    assert patched.content == "fourth\n\nYou have 27 turns remaining."
+    patched = orchestrator._append_agent_steps_remaining_notice(fourth_turn)
+    assert (
+        patched.content
+        == "fourth\n\nENVIRONMENT REMINDER: You have 3 turns left to complete the task."
+    )
 
 
-def test_turns_remaining_not_appended_on_environment_turns(
+def test_agent_steps_remaining_disabled_when_budget_unset(
     domain_name: str,
     get_environment: Callable[[], Environment],
     base_task: Task,
 ):
-    from tau2.data_model.message import ToolMessage
-
     orchestrator = _make_orchestrator_for_turn_notice_test(
         domain_name=domain_name,
         get_environment=get_environment,
         base_task=base_task,
+        max_agent_steps=None,
+    )
+
+    user_message = UserMessage(role="user", content="status?")
+    tool_message = ToolMessage(
+        id="call_1",
+        role="tool",
+        content="env output",
+        requestor="assistant",
+    )
+    orchestrator.trajectory = [user_message]
+
+    user_patched = orchestrator._append_agent_steps_remaining_notice(user_message)
+    tool_patched = orchestrator._append_agent_steps_remaining_notice(tool_message)
+
+    assert user_patched.content == "status?"
+    assert tool_patched.content == "env output"
+
+
+def test_agent_steps_remaining_appended_to_tool_message_to_agent(
+    domain_name: str,
+    get_environment: Callable[[], Environment],
+    base_task: Task,
+):
+    orchestrator = _make_orchestrator_for_turn_notice_test(
+        domain_name=domain_name,
+        get_environment=get_environment,
+        base_task=base_task,
+        max_agent_steps=3,
     )
     orchestrator.from_role = Role.ENV
     orchestrator.to_role = Role.AGENT
@@ -623,23 +666,22 @@ def test_turns_remaining_not_appended_on_environment_turns(
         content="env output",
         requestor="assistant",
     )
+    orchestrator.agent_steps_count = 1
     orchestrator.agent_state = {}
 
-    original_append = orchestrator._append_turns_remaining_notice
-
-    def _fail_if_called(_message):
-        raise AssertionError("turns-remaining notice should not be appended on env turns")
-
-    orchestrator._append_turns_remaining_notice = _fail_if_called
     asyncio.run(orchestrator.step())
-    orchestrator._append_turns_remaining_notice = original_append
 
     recorded = orchestrator.agent.received_messages[-1]
     assert isinstance(recorded, ToolMessage)
-    assert recorded.content == "env output"
+    assert (
+        recorded.content
+        == "env output\n\nENVIRONMENT REMINDER: You have 2 turns left to complete the task."
+    )
+    assert orchestrator.message.content == "ok"
+    assert orchestrator.agent_steps_count == 2
 
 
-def test_turns_remaining_clamped_to_zero(
+def test_agent_steps_remaining_appended_to_last_multi_tool_message(
     domain_name: str,
     get_environment: Callable[[], Environment],
     base_task: Task,
@@ -648,14 +690,295 @@ def test_turns_remaining_clamped_to_zero(
         domain_name=domain_name,
         get_environment=get_environment,
         base_task=base_task,
-        max_steps=75,
+        max_agent_steps=3,
     )
-    user_message = UserMessage(role="user", content="status?")
-    orchestrator.trajectory = [user_message]
-    orchestrator.step_count = 200
+    orchestrator.from_role = Role.ENV
+    orchestrator.to_role = Role.AGENT
+    orchestrator.message = MultiToolMessage(
+        role="tool",
+        tool_messages=[
+            ToolMessage(
+                id="call_1",
+                role="tool",
+                content="first",
+                requestor="assistant",
+            ),
+            ToolMessage(
+                id="call_2",
+                role="tool",
+                content="second",
+                requestor="assistant",
+            ),
+        ],
+    )
+    orchestrator.agent_steps_count = 1
+    orchestrator.agent_state = {}
 
-    patched = orchestrator._append_turns_remaining_notice(user_message)
-    assert patched.content == "status?\n\nYou have 0 turns remaining."
+    asyncio.run(orchestrator.step())
+
+    recorded = orchestrator.agent.received_messages[-1]
+    assert isinstance(recorded, MultiToolMessage)
+    assert recorded.tool_messages[0].content == "first"
+    assert (
+        recorded.tool_messages[1].content
+        == "second\n\nENVIRONMENT REMINDER: You have 2 turns left to complete the task."
+    )
+
+
+def test_agent_text_output_increments_agent_steps_count(
+    domain_name: str,
+    get_environment: Callable[[], Environment],
+    base_task: Task,
+):
+    orchestrator = _make_orchestrator_for_turn_notice_test(
+        domain_name=domain_name,
+        get_environment=get_environment,
+        base_task=base_task,
+    )
+    user_message = UserMessage(role="user", content="hello")
+    orchestrator.from_role = Role.USER
+    orchestrator.to_role = Role.AGENT
+    orchestrator.message = user_message
+    orchestrator.trajectory = [user_message]
+    orchestrator.agent_state = {}
+
+    asyncio.run(orchestrator.step())
+
+    assert orchestrator.agent_steps_count == 1
+    assert orchestrator.from_role == Role.AGENT
+    assert orchestrator.to_role == Role.USER
+
+
+def test_agent_tool_call_output_increments_agent_steps_count(
+    domain_name: str,
+    get_environment: Callable[[], Environment],
+    base_task: Task,
+):
+    agent_tool_call = AssistantMessage(
+        role="assistant",
+        tool_calls=[ToolCall(id="call_1", name="search", arguments={})],
+    )
+    orchestrator = _make_orchestrator_for_turn_notice_test(
+        domain_name=domain_name,
+        get_environment=get_environment,
+        base_task=base_task,
+        next_agent_message=agent_tool_call,
+    )
+    user_message = UserMessage(role="user", content="hello")
+    orchestrator.from_role = Role.USER
+    orchestrator.to_role = Role.AGENT
+    orchestrator.message = user_message
+    orchestrator.trajectory = [user_message]
+    orchestrator.agent_state = {}
+
+    asyncio.run(orchestrator.step())
+
+    assert orchestrator.agent_steps_count == 1
+    assert orchestrator.from_role == Role.AGENT
+    assert orchestrator.to_role == Role.ENV
+
+
+def test_environment_tool_results_do_not_increment_agent_steps_count(
+    domain_name: str,
+    get_environment: Callable[[], Environment],
+    base_task: Task,
+):
+    orchestrator = _make_orchestrator_for_turn_notice_test(
+        domain_name=domain_name,
+        get_environment=get_environment,
+        base_task=base_task,
+    )
+    orchestrator.from_role = Role.AGENT
+    orchestrator.to_role = Role.ENV
+    orchestrator.message = AssistantMessage(
+        role="assistant",
+        tool_calls=[ToolCall(id="call_1", name="search", arguments={})],
+    )
+    orchestrator.agent_steps_count = 1
+    orchestrator._execute_tool_calls = lambda _tool_calls: [
+        ToolMessage(
+            id="call_1",
+            role="tool",
+            content="env output",
+            requestor="assistant",
+        )
+    ]
+
+    asyncio.run(orchestrator.step())
+
+    assert orchestrator.agent_steps_count == 1
+    assert orchestrator.from_role == Role.ENV
+    assert orchestrator.to_role == Role.AGENT
+
+
+def test_user_and_user_tool_results_do_not_increment_agent_steps_count(
+    domain_name: str,
+    get_environment: Callable[[], Environment],
+    base_task: Task,
+):
+    orchestrator = _make_orchestrator_for_turn_notice_test(
+        domain_name=domain_name,
+        get_environment=get_environment,
+        base_task=base_task,
+    )
+    orchestrator.from_role = Role.USER
+    orchestrator.to_role = Role.ENV
+    orchestrator.message = UserMessage(
+        role="user",
+        tool_calls=[ToolCall(id="call_1", name="search", arguments={})],
+    )
+    orchestrator.agent_steps_count = 1
+    orchestrator._execute_tool_calls = lambda _tool_calls: [
+        ToolMessage(
+            id="call_1",
+            role="tool",
+            content="user tool output",
+            requestor="user",
+        )
+    ]
+
+    asyncio.run(orchestrator.step())
+
+    assert orchestrator.agent_steps_count == 1
+    assert orchestrator.from_role == Role.ENV
+    assert orchestrator.to_role == Role.USER
+
+
+def test_default_first_agent_message_not_counted(
+    domain_name: str,
+    get_environment: Callable[[], Environment],
+    base_task: Task,
+):
+    orchestrator = _make_orchestrator_for_turn_notice_test(
+        domain_name=domain_name,
+        get_environment=get_environment,
+        base_task=base_task,
+    )
+
+    orchestrator.initialize()
+
+    assert orchestrator.agent_steps_count == 0
+    assert orchestrator.trajectory[0] == DEFAULT_FIRST_AGENT_MESSAGE
+
+
+def test_agent_steps_budget_terminates_before_next_agent_call(
+    domain_name: str,
+    get_environment: Callable[[], Environment],
+    base_task: Task,
+):
+    orchestrator = _make_orchestrator_for_turn_notice_test(
+        domain_name=domain_name,
+        get_environment=get_environment,
+        base_task=base_task,
+        max_agent_steps=1,
+    )
+    orchestrator.from_role = Role.USER
+    orchestrator.to_role = Role.AGENT
+    orchestrator.message = UserMessage(role="user", content="hello")
+    orchestrator.agent_steps_count = 1
+    orchestrator.agent_state = {}
+
+    asyncio.run(orchestrator.step())
+
+    assert orchestrator.done is True
+    assert orchestrator.termination_reason == TerminationReason.MAX_AGENT_STEPS
+    assert orchestrator.agent.received_messages == []
+
+
+def test_exhausted_agent_steps_still_allows_user_routing(
+    domain_name: str,
+    get_environment: Callable[[], Environment],
+    base_task: Task,
+):
+    orchestrator = _make_orchestrator_for_turn_notice_test(
+        domain_name=domain_name,
+        get_environment=get_environment,
+        base_task=base_task,
+        max_agent_steps=1,
+    )
+    orchestrator.from_role = Role.AGENT
+    orchestrator.to_role = Role.USER
+    orchestrator.agent_steps_count = 1
+
+    orchestrator._check_termination()
+
+    assert orchestrator.done is False
+
+
+def test_final_agent_tool_call_executes_then_stops(
+    domain_name: str,
+    get_environment: Callable[[], Environment],
+    base_task: Task,
+):
+    agent_tool_call = AssistantMessage(
+        role="assistant",
+        tool_calls=[ToolCall(id="call_1", name="search", arguments={})],
+    )
+    orchestrator = _make_orchestrator_for_turn_notice_test(
+        domain_name=domain_name,
+        get_environment=get_environment,
+        base_task=base_task,
+        max_agent_steps=1,
+        next_agent_message=agent_tool_call,
+    )
+    user_message = UserMessage(role="user", content="hello")
+    orchestrator.from_role = Role.USER
+    orchestrator.to_role = Role.AGENT
+    orchestrator.message = user_message
+    orchestrator.trajectory = [user_message]
+    orchestrator.agent_state = {}
+
+    asyncio.run(orchestrator.step())
+    orchestrator._check_termination()
+
+    assert orchestrator.done is False
+    assert orchestrator.agent_steps_count == 1
+    assert orchestrator.to_role == Role.ENV
+
+    orchestrator._execute_tool_calls = lambda _tool_calls: [
+        ToolMessage(
+            id="call_1",
+            role="tool",
+            content="env output",
+            requestor="assistant",
+        )
+    ]
+    asyncio.run(orchestrator.step())
+    orchestrator._check_termination()
+
+    assert orchestrator.done is True
+    assert orchestrator.termination_reason == TerminationReason.MAX_AGENT_STEPS
+    assert isinstance(orchestrator.trajectory[-1], ToolMessage)
+    assert orchestrator.trajectory[-1].content == "env output"
+
+
+def test_finalize_records_step_metrics(
+    domain_name: str,
+    get_environment: Callable[[], Environment],
+    base_task: Task,
+):
+    orchestrator = _make_orchestrator_for_turn_notice_test(
+        domain_name=domain_name,
+        get_environment=get_environment,
+        base_task=base_task,
+        max_agent_steps=4,
+    )
+    user_message = UserMessage(role="user", content="hello")
+    orchestrator.from_role = Role.USER
+    orchestrator.to_role = Role.AGENT
+    orchestrator.message = user_message
+    orchestrator.trajectory = [user_message]
+    orchestrator.step_count = 7
+    orchestrator.agent_steps_count = 3
+    orchestrator._run_start_time = "2026-05-05T00:00:00"
+    orchestrator._run_start_perf = 0.0
+    orchestrator.termination_reason = TerminationReason.MAX_AGENT_STEPS
+
+    simulation_run = orchestrator._finalize()
+
+    assert simulation_run.num_steps == 7
+    assert simulation_run.agent_steps == 3
+    assert simulation_run.max_agent_steps == 4
 
 
 def test_turns_remaining_interval_must_be_positive(
@@ -669,4 +992,18 @@ def test_turns_remaining_interval_must_be_positive(
             get_environment=get_environment,
             base_task=base_task,
             turns_remaining_interval=0,
+        )
+
+
+def test_max_agent_steps_must_be_positive(
+    domain_name: str,
+    get_environment: Callable[[], Environment],
+    base_task: Task,
+):
+    with pytest.raises(ValueError, match="max_agent_steps must be >= 1"):
+        _make_orchestrator_for_turn_notice_test(
+            domain_name=domain_name,
+            get_environment=get_environment,
+            base_task=base_task,
+            max_agent_steps=0,
         )

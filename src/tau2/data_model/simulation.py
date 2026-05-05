@@ -539,10 +539,18 @@ class TextRunConfig(BaseRunConfig):
             default=DEFAULT_MAX_STEPS,
         ),
     ]
+    max_agent_steps: Annotated[
+        Optional[int],
+        Field(
+            description="Maximum number of generated agent steps. Agent text responses and tool-call messages each count as one step. None means no agent-step budget.",
+            default=None,
+            ge=1,
+        ),
+    ]
     turns_remaining_interval: Annotated[
         int,
         Field(
-            description="Append turns-remaining notice to user messages every Nth user turn. Must be >= 1.",
+            description="Append agent-steps remaining notice to user messages every Nth user turn. Must be >= 1.",
             default=1,
             ge=1,
         ),
@@ -1191,6 +1199,10 @@ class Info(BaseModel):
     git_commit: str = Field(description="The git commit hash.")
     num_trials: int = Field(description="The number of trials.")
     max_steps: int = Field(description="The maximum number of steps.")
+    max_agent_steps: Optional[int] = Field(
+        description="Maximum number of generated agent steps.",
+        default=None,
+    )
     max_errors: int = Field(description="The maximum number of errors.")
     user_info: UserInfo = Field(description="User information.")
     agent_info: AgentInfo = Field(description="Agent information.")
@@ -1224,6 +1236,7 @@ class TerminationReason(str, Enum):
     USER_STOP = "user_stop"
     AGENT_STOP = "agent_stop"
     MAX_STEPS = "max_steps"
+    MAX_AGENT_STEPS = "max_agent_steps"
     TIMEOUT = "timeout"
     TOO_MANY_ERRORS = "too_many_errors"
     AGENT_ERROR = "agent_error"
@@ -1246,6 +1259,18 @@ class SimulationRun(BaseModel):
     start_time: str = Field(description="The start time of the simulation.")
     end_time: str = Field(description="The end time of the simulation.")
     duration: float = Field(description="The duration of the simulation.")
+    num_steps: Optional[int] = Field(
+        description="Number of orchestrator steps executed.",
+        default=None,
+    )
+    agent_steps: Optional[int] = Field(
+        description="Number of generated agent steps. Text replies and tool-call messages each count as one step.",
+        default=None,
+    )
+    max_agent_steps: Optional[int] = Field(
+        description="Configured maximum number of generated agent steps.",
+        default=None,
+    )
     termination_reason: TerminationReason = Field(
         description="The reason for the termination of the simulation."
     )
@@ -1642,11 +1667,15 @@ class Results(BaseModel):
             "user_cost": sim.user_cost,
             "termination_reason": sim.termination_reason,
             "duration": sim.duration,
+            "num_steps": sim.num_steps,
+            "agent_steps": sim.agent_steps,
+            "max_agent_steps": sim.max_agent_steps,
             "num_messages": len(sim.get_messages()),
             "info_git_commit": info.git_commit,
             "info_seed": info.seed,
             "info_num_trials": info.num_trials,
             "info_max_steps": info.max_steps,
+            "info_max_agent_steps": info.max_agent_steps,
             "info_max_errors": info.max_errors,
             "info_domain": info.environment_info.domain_name,
             "info_user_implementation": info.user_info.implementation,
