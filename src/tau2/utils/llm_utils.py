@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import os
@@ -39,8 +40,6 @@ from tau2.data_model.message import (
     UserMessage,
 )
 from tau2.environment.tool import Tool
-
-from nemo_gym.openai_utils import NeMoGymAsyncOpenAI
 
 # Suppress Pydantic serialization warnings from LiteLLM
 # These occur due to type mismatches between streaming and non-streaming response types
@@ -103,6 +102,50 @@ if LLM_CACHE_ENABLED:
 else:
     logger.info("LiteLLM: Cache is disabled")
     litellm.disable_cache()
+
+
+async def _create_chat_completion(
+    *,
+    api_base: str,
+    api_key: str,
+    payload: dict[str, Any],
+    num_retries: int,
+) -> dict[str, Any]:
+    """Call an OpenAI-compatible chat endpoint without Nemo Gym's global client.
+
+    Tau2 runs simulations through ThreadPoolExecutor workers and wraps each
+    simulation in asyncio.run(). Nemo Gym's global aiohttp ClientSession is
+    bound to the first event loop that creates it, so reusing it across Tau2
+    tasks or worker threads can raise "Future attached to a different loop".
+    A short-lived httpx client avoids sharing event-loop-bound state.
+    """
+    retry_statuses = {429, 500, 502, 503, 504}
+    url = f"{api_base.rstrip('/')}/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+    attempts = max(1, num_retries)
+
+    async with httpx.AsyncClient(timeout=None) as client:
+        for attempt in range(1, attempts + 1):
+            response = await client.post(url, json=payload, headers=headers)
+            if response.status_code in retry_statuses and attempt < attempts:
+                logger.warning(
+                    "LLM request retry {}/{} for {} after HTTP {}: {}",
+                    attempt,
+                    attempts,
+                    url,
+                    response.status_code,
+                    response.text[:200],
+                )
+                await asyncio.sleep(0.5)
+                continue
+
+            response.raise_for_status()
+            return response.json()
+
+    raise RuntimeError(f"LLM request failed after {attempts} attempts: {url}")
 
 
 def _parse_ft_model_name(model: str) -> str:
@@ -407,18 +450,25 @@ async def generate(
     request_timestamp = datetime.now().isoformat()
 
     start_time = time.perf_counter()
-    client = NeMoGymAsyncOpenAI(
-        base_url=kwargs.pop("api_base"),
-        api_key=kwargs.pop("api_key"),
-    )
-    kwargs.pop("num_retries")
+    api_base = kwargs.pop("api_base")
+    api_key = kwargs.pop("api_key")
+    num_retries = kwargs.pop("num_retries")
+    payload: dict[str, Any] = {
+        "model": model,
+        "messages": litellm_messages,
+        **kwargs,
+    }
+    if tools_schema is not None:
+        payload["tools"] = tools_schema
+    if tool_choice is not None:
+        payload["tool_choice"] = tool_choice
+
     try:
-        response = await client.create_chat_completion(
-            model=model,
-            messages=litellm_messages,
-            tools=tools_schema,
-            tool_choice=tool_choice,
-            **kwargs,
+        response = await _create_chat_completion(
+            api_base=api_base,
+            api_key=api_key,
+            payload=payload,
+            num_retries=num_retries,
         )
     except Exception as e:
         logger.error(e)
