@@ -7,6 +7,8 @@ from datetime import datetime, timedelta
 from enum import Enum
 from pathlib import Path
 from typing import Any, Generic, Optional, TypeVar
+from os import getenv
+import sys
 
 from loguru import logger
 
@@ -257,7 +259,7 @@ class BaseOrchestrator(ABC, Generic[BaseAgentT, BaseUserT, TrajectoryItemT]):
         except Exception as e:
             logger.warning(f"Error during user cleanup: {e}")
 
-    def run(self) -> SimulationRun:
+    async def run(self) -> SimulationRun:
         """
         Run the simulation.
 
@@ -277,8 +279,12 @@ class BaseOrchestrator(ABC, Generic[BaseAgentT, BaseUserT, TrajectoryItemT]):
         finalized = False
         try:
             while not self.done:
-                self.step()
+                await self.step()
                 self._check_termination()
+
+                if self.step_count % 10 == 0 and getenv("NEMO_GYM_TAU2_STEP_COUNT_PRINT") == "true":
+                    print(f"Task ID {self.task.id} step {self.step_count} ({time.perf_counter() - self._run_start_perf:.2f}s)", file=sys.stderr)
+
             result = self._finalize()
             finalized = True
             return result
@@ -820,7 +826,7 @@ class Orchestrator(BaseOrchestrator[AgentT, UserT, Message]):
         )
         return simulation_run
 
-    def step(self):
+    async def step(self):
         """
         Perform one step of the simulation using half-duplex (turn-based) communication.
 
@@ -838,7 +844,7 @@ class Orchestrator(BaseOrchestrator[AgentT, UserT, Message]):
         )
         # AGENT/ENV -> USER
         if self.from_role in [Role.AGENT, Role.ENV] and self.to_role == Role.USER:
-            user_msg, self.user_state = self.user.generate_next_message(
+            user_msg, self.user_state = await self.user.generate_next_message(
                 self.message, self.user_state
             )
             user_msg.validate()
@@ -859,10 +865,30 @@ class Orchestrator(BaseOrchestrator[AgentT, UserT, Message]):
         elif (
             self.from_role == Role.USER or self.from_role == Role.ENV
         ) and self.to_role == Role.AGENT:
-            agent_msg, self.agent_state = self.agent.generate_next_message(
+            agent_msg, self.agent_state = await self.agent.generate_next_message(
                 self.message, self.agent_state
             )
-            agent_msg.validate()
+            # Catch malformed agent responses — NeMo Gym OpenAI client returns an empty
+            # message (no content + no tool calls) in several edge cases (context window
+            # exceeded, model produces only </think> reasoning then nothing, etc.).
+            # We append the malformed message to the trajectory FIRST so its reasoning_content
+            # (and any other diagnostic data) survives in logs/output, then terminate cleanly.
+            try:
+                agent_msg.validate()
+            except Exception as e:
+                logger.warning(
+                    f"Agent returned an empty / malformed message — preserving for debug. "
+                    f"reasoning_content={getattr(agent_msg, 'reasoning_content', None)!r}, "
+                    f"content={getattr(agent_msg, 'content', None)!r}, "
+                    f"tool_calls={getattr(agent_msg, 'tool_calls', None)!r}, "
+                    f"validate_error={e}"
+                )
+                self.trajectory.append(agent_msg)
+                self.message = agent_msg
+                self.done = True
+                self.termination_reason = TerminationReason.EMPTY_TOOL_CALLS_AND_CONTENT
+                return
+
             if self.agent.is_stop(agent_msg):
                 self.done = True
                 self.termination_reason = TerminationReason.AGENT_STOP

@@ -56,6 +56,7 @@ from tau2.user_simulation_voice_presets import COMPLEXITY_CONFIGS
 from tau2.utils.display import ConsoleDisplay, Text
 from tau2.utils.llm_utils import llm_log_mode, set_llm_log_dir, set_llm_log_mode
 from tau2.utils.utils import DATA_DIR
+from nemo_gym.global_config import GlobalConfigDictParserConfig, set_global_config_dict
 
 # Context variable to track current simulation_id for log filtering
 # This ensures task-specific log handlers only receive their own messages
@@ -335,7 +336,7 @@ class _TaskLogContext:
 # =============================================================================
 
 
-def run_single_task(
+async def run_single_task(
     config: RunConfig,
     task: Task,
     *,
@@ -411,7 +412,7 @@ def run_single_task(
 
         # Layer 1: Run the simulation
         env_kwargs = _build_env_kwargs(config, task) or None
-        simulation = run_simulation(
+        simulation = await run_simulation(
             orchestrator, evaluation_type=evaluation_type, env_kwargs=env_kwargs
         )
 
@@ -627,6 +628,8 @@ def run_tasks(
     # (which get a fresh default context) can re-apply them.
     _main_thread_llm_log_mode = llm_log_mode.get()
 
+    set_global_config_dict(global_config_dict_parser_config=GlobalConfigDictParserConfig(skip_load_from_cli=True, skip_load_from_dotenv=True))
+
     def _run_tracked(
         task: Task, trial: int, seed: int, progress_str: str
     ) -> SimulationRun:
@@ -645,11 +648,11 @@ def run_tasks(
         )
         ConsoleDisplay.console.print(console_text)
 
-        def _execute(
+        async def _execute(
             run_seed: int = seed,
             hallucination_feedback: Optional[str] = None,
         ):
-            return run_single_task(
+            return await run_single_task(
                 config,
                 task,
                 seed=run_seed,
