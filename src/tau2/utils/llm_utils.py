@@ -190,13 +190,21 @@ def to_litellm_messages(messages: list[Message]) -> list[dict]:
                     }
                     for tc in message.tool_calls
                 ]
-            litellm_messages.append(
-                {
-                    "role": "assistant",
-                    "content": message.content,
-                    "tool_calls": tool_calls,
-                }
-            )
+            assistant_msg = {
+                "role": "assistant",
+                "content": message.content,
+                "tool_calls": tool_calls,
+            }
+            # Propagate reasoning_content back to the model when present.
+            # DeepSeek-V3.2 / V4 (and other reasoning-trace-aware chat templates)
+            # require the prior turn's reasoning_content to be replayed in the
+            # next-turn input messages — otherwise the model loses tool-arg
+            # fidelity (emits unfilled `[user_id]`-style placeholders) in
+            # multi-turn tool-calling. Models whose chat templates don't
+            # consume this field will silently ignore the extra key.
+            if message.reasoning_content is not None:
+                assistant_msg["reasoning_content"] = message.reasoning_content
+            litellm_messages.append(assistant_msg)
         elif isinstance(message, ToolMessage):
             litellm_messages.append(
                 {
@@ -424,15 +432,24 @@ async def generate(
         logger.error(e)
         raise e
 
-    # The Tau2 default will never propogate things like reasoning from vLLM servers
-    # We explicitly strip the reasoning from Gym side here
+    # Split `<think>...</think>` from content if the server inlined the reasoning
+    # trace (e.g. older vLLM serving without --reasoning-parser, or when the model
+    # leaks reasoning into content). Store it in `reasoning_content` so it is
+    # propagated back to the model in subsequent turns by `to_litellm_messages`.
+    # See `AssistantMessage.reasoning_content` for rationale (DSv3.2 / V4
+    # multi-turn tool-calling requires this).
     content: Optional[str] = response["choices"][0]["message"]["content"]
-    reasoning_content: Optional[str] = None
+    reasoning_content: Optional[str] = response["choices"][0]["message"].get("reasoning_content")
     if content is not None and "</think>" in content:
         new_content = content.rsplit("</think>", maxsplit=1)[1]
-        reasoning_content = content[:-len(new_content)]
+        inline_reasoning = content[:-len(new_content)]
         response["choices"][0]["message"]["content"] = new_content.strip()
-        response["choices"][0]["message"]["reasoning_content"] = reasoning_content
+        # Prefer the server-provided reasoning_content if it already exists
+        # (e.g. via vLLM `--reasoning-parser`), else use what we extracted from
+        # the `<think>` tags.
+        if reasoning_content is None:
+            reasoning_content = inline_reasoning
+            response["choices"][0]["message"]["reasoning_content"] = reasoning_content
 
     response = ModelResponse.model_validate(response)
 
@@ -471,6 +488,7 @@ async def generate(
         cost=cost,
         usage=usage,
         raw_data=response.to_dict(),
+        reasoning_content=reasoning_content,
         generation_time_seconds=generation_time_seconds,
     )
 
