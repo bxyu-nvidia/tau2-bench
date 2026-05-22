@@ -15,6 +15,18 @@ tau2 run \
     --auto-resume
 
 tau2 run \
+    --domain airline-anthropic \
+    --agent-llm dummy \
+    --agent-llm-args "{\"api_base\": \"dummy\", \"api_key\": \"EMPTY\"}" \
+    --user-llm dummy \
+    --num-trials 1 \
+    --max-retries 1 \
+    --max-concurrency 256 \
+    --seed 42 \
+    --save-to $(pwd)/results/airline-anthropic \
+    --auto-resume
+
+tau2 run \
     --domain telecom \
     --agent-llm dummy \
     --agent-llm-args "{\"api_base\": \"dummy\", \"api_key\": \"EMPTY\"}" \
