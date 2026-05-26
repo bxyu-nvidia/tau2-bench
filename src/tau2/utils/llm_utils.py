@@ -110,6 +110,7 @@ async def _create_chat_completion(
     api_key: str,
     payload: dict[str, Any],
     num_retries: int,
+    retry_max_sleep_s: float = 0.5,
 ) -> dict[str, Any]:
     """Call an OpenAI-compatible chat endpoint without Nemo Gym's global client.
 
@@ -131,15 +132,30 @@ async def _create_chat_completion(
         for attempt in range(1, attempts + 1):
             response = await client.post(url, json=payload, headers=headers)
             if response.status_code in retry_statuses and attempt < attempts:
+                # Respect Retry-After if the server sends one, else exponential
+                # backoff capped at retry_max_sleep_s. Default cap is 0.5s
+                # (matching the original behavior for local vLLM endpoints).
+                # Rate-limited endpoints (e.g. NVI) should pass
+                # retry_max_sleep_s>=30 via *_llm_args to enable real backoff.
+                retry_after = response.headers.get("Retry-After")
+                sleep_s: float
+                if retry_after:
+                    try:
+                        sleep_s = min(max(retry_max_sleep_s * 2, 120.0), float(retry_after))
+                    except ValueError:
+                        sleep_s = retry_max_sleep_s
+                else:
+                    sleep_s = min(retry_max_sleep_s, 2.0 ** attempt)
                 logger.warning(
-                    "LLM request retry {}/{} for {} after HTTP {}: {}",
+                    "LLM request retry {}/{} for {} after HTTP {} (sleep {}s): {}",
                     attempt,
                     attempts,
                     url,
                     response.status_code,
+                    sleep_s,
                     response.text[:200],
                 )
-                await asyncio.sleep(0.5)
+                await asyncio.sleep(sleep_s)
                 continue
 
             response.raise_for_status()
@@ -453,6 +469,7 @@ async def generate(
     api_base = kwargs.pop("api_base")
     api_key = kwargs.pop("api_key")
     num_retries = kwargs.pop("num_retries")
+    retry_max_sleep_s = kwargs.pop("retry_max_sleep_s", 0.5)
     payload: dict[str, Any] = {
         "model": model,
         "messages": litellm_messages,
@@ -468,6 +485,7 @@ async def generate(
             api_base=api_base,
             api_key=api_key,
             payload=payload,
+            retry_max_sleep_s=retry_max_sleep_s,
             num_retries=num_retries,
         )
     except Exception as e:
