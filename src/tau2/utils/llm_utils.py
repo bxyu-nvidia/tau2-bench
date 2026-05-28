@@ -104,6 +104,28 @@ else:
     logger.info("LiteLLM: Cache is disabled")
     litellm.disable_cache()
 
+def _tau2_trace(msg: str) -> None:
+    """Bulletproof trace — file-writes survive loguru.remove() and any stdout
+    redirection that the Gym wrapper or batch runner might apply."""
+    import os as _os
+    import datetime as _dt
+    inv = _os.environ.get("NEL_INVOCATION_ID", "")
+    paths = []
+    if inv:
+        paths.append(f"/cache/huggingface/{inv}/tau2_trace.log")
+    paths.append("/tmp/tau2_trace.log")
+    line = f"[{_dt.datetime.now().isoformat()}] [pid={_os.getpid()}] {msg}\n"
+    for p in paths:
+        try:
+            with open(p, "a", buffering=1) as _f:
+                _f.write(line)
+            return
+        except Exception:
+            continue
+
+
+_tau2_trace("MODULE_LOAD tau2.utils.llm_utils imported (awarno/reasoning-propagation-verbose)")
+
 # Module-load banner — visible in every job's log so it's clear the
 # reasoning-propagation branch is actually running (vs an older tau2-bench).
 logger.info(
@@ -184,6 +206,10 @@ def to_litellm_messages(messages: list[Message]) -> list[dict]:
     """
     Convert a list of Tau2 messages to a list of litellm messages.
     """
+    _tau2_trace(
+        f"to_litellm_messages ENTRY n_messages={len(messages)} "
+        f"roles={[getattr(m, 'role', '?') for m in messages]}"
+    )
     litellm_messages = []
     _asst_turns = 0
     _asst_turns_with_reasoning = 0
@@ -219,6 +245,14 @@ def to_litellm_messages(messages: list[Message]) -> list[dict]:
             # fidelity (emits unfilled `[user_id]`-style placeholders) in
             # multi-turn tool-calling. Models whose chat templates don't
             # consume this field will silently ignore the extra key.
+            _msg_rc = getattr(message, "reasoning_content", "<<NO_ATTR>>")
+            _msg_r = getattr(message, "reasoning", "<<NO_ATTR>>")
+            _tau2_trace(
+                f"to_litellm_messages ASSISTANT turn={_asst_turns} "
+                f"msg.reasoning_content={(type(_msg_rc).__name__, len(_msg_rc) if isinstance(_msg_rc, str) else None, (_msg_rc[:60] if isinstance(_msg_rc, str) else _msg_rc))!r} "
+                f"msg.reasoning={(type(_msg_r).__name__, len(_msg_r) if isinstance(_msg_r, str) else None, (_msg_r[:60] if isinstance(_msg_r, str) else _msg_r))!r} "
+                f"msg_all_attrs={sorted([a for a in dir(message) if not a.startswith('_') and a in ('reasoning','reasoning_content','content','tool_calls','role')])}"
+            )
             if message.reasoning_content is not None:
                 # Belt-and-suspenders: emit BOTH keys (mirrors awarno's working
                 # gitlab core_evals_frameworks/tau2-bench fork). Different chat
@@ -432,6 +466,10 @@ async def generate(
 
     Returns: A tuple containing the message and the cost.
     """
+    _tau2_trace(
+        f"generate() ENTRY call_name={call_name!r} model={model!r} "
+        f"n_messages={len(messages)} api_base={kwargs.get('api_base', '?')!r}"
+    )
     validate_message_history(messages)
     if kwargs.get("num_retries") is None:
         kwargs["num_retries"] = DEFAULT_MAX_RETRIES
@@ -503,6 +541,14 @@ async def generate(
             reasoning_content = inline_reasoning
             response["choices"][0]["message"]["reasoning_content"] = reasoning_content
             _reasoning_source = "inline-think-tags"
+    _raw_rc = response["choices"][0]["message"].get("reasoning_content")
+    _raw_r = response["choices"][0]["message"].get("reasoning")
+    _tau2_trace(
+        f"generate() EXTRACTION source={_reasoning_source} "
+        f"raw_reasoning_content={(type(_raw_rc).__name__, len(_raw_rc) if isinstance(_raw_rc, str) else None, (_raw_rc[:60] if isinstance(_raw_rc, str) else _raw_rc))!r} "
+        f"raw_reasoning={(type(_raw_r).__name__, len(_raw_r) if isinstance(_raw_r, str) else None, (_raw_r[:60] if isinstance(_raw_r, str) else _raw_r))!r} "
+        f"merged_reasoning_content_len={len(reasoning_content) if isinstance(reasoning_content, str) else 'N/A'}"
+    )
     if reasoning_content:
         logger.info(
             "[REASONING_PROPAGATION] generate() EXTRACTED reasoning_content from {} "
