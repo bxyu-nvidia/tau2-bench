@@ -485,6 +485,27 @@ async def generate(
     if tools_schema and tool_choice is None:
         tool_choice = "auto"
 
+    # Bulletproof trace of the FINAL outgoing messages list — keys per role,
+    # and reasoning_content snippet on each assistant entry. Settles the
+    # propagation question definitively (loguru.remove() doesn't touch files).
+    _outgoing_summary = []
+    for _i, _m in enumerate(litellm_messages):
+        if isinstance(_m, dict):
+            _role = _m.get("role", "?")
+            _keys = sorted(_m.keys())
+            _rc = _m.get("reasoning_content")
+            _rsn = _m.get("reasoning")
+            _outgoing_summary.append(
+                f"idx={_i} role={_role} keys={_keys} "
+                f"rc_type={type(_rc).__name__} rc_len={len(_rc) if isinstance(_rc, str) else 'N/A'} "
+                f"rsn_type={type(_rsn).__name__} rsn_len={len(_rsn) if isinstance(_rsn, str) else 'N/A'}"
+            )
+    _tau2_trace(
+        f"generate() PRE_HTTP call_name={call_name!r} api_base={kwargs.get('api_base', '?')!r} "
+        f"n_litellm_messages={len(litellm_messages)} "
+        f"outgoing_messages_summary={_outgoing_summary}"
+    )
+
     # Prepare request data for logging
     formatted_messages = _format_messages_for_logging(litellm_messages)
     request_data = {
