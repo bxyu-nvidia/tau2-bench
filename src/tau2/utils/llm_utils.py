@@ -104,6 +104,19 @@ else:
     logger.info("LiteLLM: Cache is disabled")
     litellm.disable_cache()
 
+# Module-load banner — visible in every job's log so it's clear the
+# reasoning-propagation branch is actually running (vs an older tau2-bench).
+logger.info(
+    "============================================================\n"
+    "[REASONING_PROPAGATION] ACTIVE — tau2-bench branch "
+    "awarno/reasoning-propagation-verbose (based on arajfer e6e2324).\n"
+    "Reasoning_content is read from the response (server-provided or <think> tags),\n"
+    "stored on AssistantMessage.reasoning_content, and replayed on subsequent\n"
+    "turns via to_litellm_messages. Watch for `[REASONING_PROPAGATION]` lines\n"
+    "in this log to verify per-turn replay.\n"
+    "============================================================"
+)
+
 
 def _parse_ft_model_name(model: str) -> str:
     """
@@ -172,10 +185,14 @@ def to_litellm_messages(messages: list[Message]) -> list[dict]:
     Convert a list of Tau2 messages to a list of litellm messages.
     """
     litellm_messages = []
+    _asst_turns = 0
+    _asst_turns_with_reasoning = 0
+    _total_reasoning_chars = 0
     for message in messages:
         if isinstance(message, UserMessage):
             litellm_messages.append({"role": "user", "content": message.content})
         elif isinstance(message, AssistantMessage):
+            _asst_turns += 1
             tool_calls = None
             if message.is_tool_call():
                 tool_calls = [
@@ -203,7 +220,29 @@ def to_litellm_messages(messages: list[Message]) -> list[dict]:
             # multi-turn tool-calling. Models whose chat templates don't
             # consume this field will silently ignore the extra key.
             if message.reasoning_content is not None:
+                # Belt-and-suspenders: emit BOTH keys (mirrors awarno's working
+                # gitlab core_evals_frameworks/tau2-bench fork). Different chat
+                # templates / vLLM versions read different field names; passing
+                # both maximizes the chance the model's prompt actually gets
+                # the past reasoning rendered into <think>...</think>.
                 assistant_msg["reasoning_content"] = message.reasoning_content
+                assistant_msg["reasoning"] = message.reasoning_content
+                _asst_turns_with_reasoning += 1
+                _total_reasoning_chars += len(message.reasoning_content)
+                logger.info(
+                    "[REASONING_PROPAGATION] turn={} PASSED reasoning_content+reasoning "
+                    "(chars={}, preview={!r})",
+                    _asst_turns,
+                    len(message.reasoning_content),
+                    message.reasoning_content[:120],
+                )
+            else:
+                logger.info(
+                    "[REASONING_PROPAGATION] turn={} NO reasoning_content on AssistantMessage "
+                    "(field={})",
+                    _asst_turns,
+                    "missing" if not hasattr(message, "reasoning_content") else "None",
+                )
             litellm_messages.append(assistant_msg)
         elif isinstance(message, ToolMessage):
             litellm_messages.append(
@@ -215,6 +254,14 @@ def to_litellm_messages(messages: list[Message]) -> list[dict]:
             )
         elif isinstance(message, SystemMessage):
             litellm_messages.append({"role": "system", "content": message.content})
+    logger.info(
+        "[REASONING_PROPAGATION] to_litellm_messages SUMMARY: "
+        "{}/{} assistant turns carried reasoning_content (total {} chars). "
+        "All reasoning_content keys were ADDED to outgoing litellm request body.",
+        _asst_turns_with_reasoning,
+        _asst_turns,
+        _total_reasoning_chars,
+    )
     return litellm_messages
 
 
@@ -439,7 +486,12 @@ async def generate(
     # See `AssistantMessage.reasoning_content` for rationale (DSv3.2 / V4
     # multi-turn tool-calling requires this).
     content: Optional[str] = response["choices"][0]["message"]["content"]
-    reasoning_content: Optional[str] = response["choices"][0]["message"].get("reasoning_content")
+    # Read either name (vLLM >= 0.16 renamed `reasoning_content` -> `reasoning`).
+    reasoning_content: Optional[str] = (
+        response["choices"][0]["message"].get("reasoning_content")
+        or response["choices"][0]["message"].get("reasoning")
+    )
+    _reasoning_source = "server-field" if reasoning_content else "none"
     if content is not None and "</think>" in content:
         new_content = content.rsplit("</think>", maxsplit=1)[1]
         inline_reasoning = content[:-len(new_content)]
@@ -450,6 +502,21 @@ async def generate(
         if reasoning_content is None:
             reasoning_content = inline_reasoning
             response["choices"][0]["message"]["reasoning_content"] = reasoning_content
+            _reasoning_source = "inline-think-tags"
+    if reasoning_content:
+        logger.info(
+            "[REASONING_PROPAGATION] generate() EXTRACTED reasoning_content from {} "
+            "(chars={}, preview={!r}) — will be stored on AssistantMessage and "
+            "replayed on next turn.",
+            _reasoning_source,
+            len(reasoning_content),
+            reasoning_content[:120],
+        )
+    else:
+        logger.info(
+            "[REASONING_PROPAGATION] generate() found NO reasoning_content in response "
+            "(neither `reasoning_content` nor `reasoning` field, no <think> tags in content)"
+        )
 
     response = ModelResponse.model_validate(response)
 
