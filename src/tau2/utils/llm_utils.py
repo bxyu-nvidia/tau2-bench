@@ -506,6 +506,25 @@ async def generate(
         f"outgoing_messages_summary={_outgoing_summary}"
     )
 
+    # RAW BYTES on the wire — serialize exactly the same way NeMoGymAsyncOpenAI will
+    # (orjson.dumps in nemo_gym/server_utils.py:167) and trace whether
+    # reasoning_content survives serialization.
+    try:
+        import orjson as _orjson
+        _raw_body = {"model": model, "messages": litellm_messages,
+                     "tools": tools_schema, "tool_choice": tool_choice, **kwargs}
+        _raw_bytes = _orjson.dumps(_raw_body)
+        _has_rc = b"reasoning_content" in _raw_bytes
+        _has_rsn = b'"reasoning"' in _raw_bytes
+        _rc_count = _raw_bytes.count(b"reasoning_content")
+        _tau2_trace(
+            f"generate() RAW_BYTES call_name={call_name!r} body_size={len(_raw_bytes)} "
+            f"contains_reasoning_content={_has_rc} count_reasoning_content={_rc_count} "
+            f"contains_reasoning={_has_rsn}"
+        )
+    except Exception as _e:
+        _tau2_trace(f"generate() RAW_BYTES_FAILED err={type(_e).__name__}: {_e}")
+
     # Prepare request data for logging
     formatted_messages = _format_messages_for_logging(litellm_messages)
     request_data = {
