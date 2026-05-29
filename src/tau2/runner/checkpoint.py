@@ -26,6 +26,10 @@ from tau2.data_model.simulation import (
     SimulationRun,
     TerminationReason,
 )
+from tau2.runner.task_normalization import (
+    nl_assertion_reward_disabled,
+    strip_nl_assertion_reward_basis,
+)
 from tau2.utils.display import ConsoleDisplay, Text
 from tau2.utils.pydantic_utils import get_pydantic_hash
 from tau2.utils.utils import show_dict_diff
@@ -95,6 +99,11 @@ def try_resume(
     # Auto-detect format from on-disk state
     fmt = Results._detect_format(save_path)
     prev_simulation_results = Results.load(save_path)
+    normalized_prev_tasks = 0
+    if nl_assertion_reward_disabled():
+        normalized_prev_tasks = strip_nl_assertion_reward_basis(
+            prev_simulation_results.tasks
+        )
 
     # Check if the run config has changed (exclude policy which may change between runs)
     exclude_fields = {"environment_info": {"policy"}}
@@ -193,7 +202,7 @@ def try_resume(
 
     # Re-save checkpoint if anything changed (infra errors removed or tasks added)
     # so that the on-disk state stays in sync with the in-memory state.
-    if added_task_ids or infra_error_count > 0:
+    if added_task_ids or infra_error_count > 0 or normalized_prev_tasks > 0:
         if fmt == "dir":
             for sim_id in infra_error_sim_ids:
                 sim_file = sims_dir / f"{sim_id}.json"
@@ -213,6 +222,11 @@ def try_resume(
             logger.info(
                 f"Removed {infra_error_count} infrastructure error simulation(s) "
                 "from checkpoint for retry"
+            )
+        if normalized_prev_tasks > 0:
+            logger.info(
+                "Normalized existing checkpoint tasks by stripping NL_ASSERTION "
+                f"from {normalized_prev_tasks} reward_basis entries"
             )
 
     console_text = Text(

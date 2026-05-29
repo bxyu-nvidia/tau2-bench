@@ -48,6 +48,11 @@ from tau2.runner.checkpoint import (
 from tau2.runner.helpers import get_info, get_tasks, make_run_name
 from tau2.runner.progress import StatusMonitor, run_with_retry
 from tau2.runner.simulation import run_simulation
+from tau2.runner.task_normalization import (
+    DISABLE_NL_ASSERTION_REWARD_ENV,
+    nl_assertion_reward_disabled,
+    strip_nl_assertion_reward_basis,
+)
 from tau2.user.user_simulator import (
     get_global_user_sim_guidelines,
     get_global_user_sim_guidelines_voice,
@@ -63,7 +68,6 @@ from nemo_gym.global_config import GlobalConfigDictParserConfig, set_global_conf
 _current_simulation_id: ContextVar[Optional[str]] = ContextVar(
     "_current_simulation_id", default=None
 )
-
 
 # =============================================================================
 # Asyncio event loop management for worker threads
@@ -505,6 +509,21 @@ def run_tasks(
         raise ValueError("Max steps must be greater than 0")
     if config.max_errors <= 0:
         raise ValueError("Max errors must be greater than 0")
+
+    stripped_nl_tasks = 0
+    if evaluation_type == EvaluationType.ALL and nl_assertion_reward_disabled():
+        stripped_nl_tasks = strip_nl_assertion_reward_basis(tasks)
+    if stripped_nl_tasks and console_display:
+        ConsoleDisplay.console.print(
+            Text(
+                text=(
+                    "NL assertion reward disabled: stripped NL_ASSERTION from "
+                    f"reward_basis for {stripped_nl_tasks} task(s). "
+                    f"Set {DISABLE_NL_ASSERTION_REWARD_ENV}=False to re-enable."
+                ),
+                style="bold yellow",
+            )
+        )
 
     is_voice = isinstance(config, VoiceRunConfig)
 
