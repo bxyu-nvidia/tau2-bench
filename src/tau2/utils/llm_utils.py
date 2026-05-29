@@ -203,7 +203,12 @@ def to_litellm_messages(messages: list[Message]) -> list[dict]:
             # multi-turn tool-calling. Models whose chat templates don't
             # consume this field will silently ignore the extra key.
             if message.reasoning_content is not None:
+                # Emit both names: `reasoning_content` (pre-vLLM-0.16, deepseek)
+                # and `reasoning` (vLLM 0.16+). Chat templates that read either
+                # one will see the propagated trace; templates that read neither
+                # will ignore the extra keys.
                 assistant_msg["reasoning_content"] = message.reasoning_content
+                assistant_msg["reasoning"] = message.reasoning_content
             litellm_messages.append(assistant_msg)
         elif isinstance(message, ToolMessage):
             litellm_messages.append(
@@ -439,7 +444,11 @@ async def generate(
     # See `AssistantMessage.reasoning_content` for rationale (DSv3.2 / V4
     # multi-turn tool-calling requires this).
     content: Optional[str] = response["choices"][0]["message"]["content"]
-    reasoning_content: Optional[str] = response["choices"][0]["message"].get("reasoning_content")
+    # vLLM >= 0.16 renamed `reasoning_content` -> `reasoning`; accept either.
+    reasoning_content: Optional[str] = (
+        response["choices"][0]["message"].get("reasoning_content")
+        or response["choices"][0]["message"].get("reasoning")
+    )
     if content is not None and "</think>" in content:
         new_content = content.rsplit("</think>", maxsplit=1)[1]
         inline_reasoning = content[:-len(new_content)]
@@ -449,6 +458,18 @@ async def generate(
         # the `<think>` tags.
         if reasoning_content is None:
             reasoning_content = inline_reasoning
+            response["choices"][0]["message"]["reasoning_content"] = reasoning_content
+    # Strip outer `<think>`/`</think>` so the chat template can re-wrap cleanly
+    # without producing `<｜Assistant｜><think><think>...</think></think>` on
+    # next-turn input. The model emits the trace inside <think>...</think>, but
+    # we want to store only the inner text.
+    if isinstance(reasoning_content, str):
+        if reasoning_content.startswith("<think>"):
+            reasoning_content = reasoning_content[len("<think>"):]
+        if reasoning_content.endswith("</think>"):
+            reasoning_content = reasoning_content[: -len("</think>")]
+        reasoning_content = reasoning_content.strip() or None
+        if reasoning_content is not None:
             response["choices"][0]["message"]["reasoning_content"] = reasoning_content
 
     response = ModelResponse.model_validate(response)
