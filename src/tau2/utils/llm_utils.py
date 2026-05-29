@@ -573,6 +573,22 @@ async def generate(
     if content is not None and "</think>" in content:
         new_content = content.rsplit("</think>", maxsplit=1)[1]
         inline_reasoning = content[:-len(new_content)]
+        # Strip the outer <think>...</think> wrapper. We store only the inner
+        # reasoning TEXT on AssistantMessage.reasoning_content. The chat template
+        # adds <think>...</think> wrappers itself when rendering — if we kept the
+        # tags here, the rendered prompt ends up double-wrapped as
+        # `<｜Assistant｜><think><think>{text}</think></think>`, which is malformed.
+        # Verified empirically: 12847 double-think occurrences in deepseek-v4 prompts
+        # in run 6d17c0a24f6d5d0d before this fix.
+        for _open in ("<think>",):
+            if inline_reasoning.startswith(_open):
+                inline_reasoning = inline_reasoning[len(_open):]
+                break
+        for _close in ("</think>",):
+            if inline_reasoning.endswith(_close):
+                inline_reasoning = inline_reasoning[: -len(_close)]
+                break
+        inline_reasoning = inline_reasoning.strip()
         response["choices"][0]["message"]["content"] = new_content.strip()
         # Prefer the server-provided reasoning_content if it already exists
         # (e.g. via vLLM `--reasoning-parser`), else use what we extracted from
@@ -581,6 +597,14 @@ async def generate(
             reasoning_content = inline_reasoning
             response["choices"][0]["message"]["reasoning_content"] = reasoning_content
             _reasoning_source = "inline-think-tags"
+    # Also defensively strip tags from server-field reasoning if present
+    # (some vLLM builds include them, some don't).
+    if isinstance(reasoning_content, str):
+        if reasoning_content.startswith("<think>"):
+            reasoning_content = reasoning_content[len("<think>"):]
+        if reasoning_content.endswith("</think>"):
+            reasoning_content = reasoning_content[: -len("</think>")]
+        reasoning_content = reasoning_content.strip() or None
     _raw_rc = response["choices"][0]["message"].get("reasoning_content")
     _raw_r = response["choices"][0]["message"].get("reasoning")
     _tau2_trace(
