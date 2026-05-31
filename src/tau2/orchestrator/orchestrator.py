@@ -285,7 +285,7 @@ class BaseOrchestrator(ABC, Generic[BaseAgentT, BaseUserT, TrajectoryItemT]):
                 if self.step_count % 10 == 0 and getenv("NEMO_GYM_TAU2_STEP_COUNT_PRINT") == "true":
                     print(f"Task ID {self.task.id} step {self.step_count} ({time.perf_counter() - self._run_start_perf:.2f}s)", file=sys.stderr)
 
-            logger.info(f"Simulation complete: domain={self.domain}, task={self.task.id}")
+            logger.info(f"Step loop complete: domain={self.domain}, task={self.task.id}")
             result = self._finalize()
             finalized = True
             return result
