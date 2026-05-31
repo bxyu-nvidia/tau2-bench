@@ -57,6 +57,7 @@ async def run_simulation(
     """
     # Run the orchestrator
     simulation = await orchestrator.run()
+    logger.info(f"Orchestrator run complete: domain={domain}, task={task.id}")
 
     # Save the actual policy used for this simulation
     simulation.policy = orchestrator.environment.get_policy()
