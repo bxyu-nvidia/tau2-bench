@@ -259,6 +259,25 @@ class BaseOrchestrator(ABC, Generic[BaseAgentT, BaseUserT, TrajectoryItemT]):
         except Exception as e:
             logger.warning(f"Error during user cleanup: {e}")
 
+    def debug_tasks(self):
+        import asyncio, json
+        result = []
+
+        for task in asyncio.all_tasks():
+            stack = task.get_stack()
+
+            result.append({
+                "name": task.get_name(),
+                "done": task.done(),
+                "coro": repr(task.get_coro()),
+                "stack": [
+                    f"{f.f_code.co_name}:{f.f_lineno}"
+                    for f in stack
+                ],
+            })
+
+        return json.dumps(result, indent=4)
+
     async def run(self) -> SimulationRun:
         """
         Run the simulation.
@@ -284,6 +303,8 @@ class BaseOrchestrator(ABC, Generic[BaseAgentT, BaseUserT, TrajectoryItemT]):
 
                 if self.step_count % 10 == 0 and getenv("NEMO_GYM_TAU2_STEP_COUNT_PRINT") == "true":
                     print(f"Task ID {self.task.id} step {self.step_count} ({time.perf_counter() - self._run_start_perf:.2f}s)", file=sys.stderr)
+
+                print(self.debug_tasks(), file=sys.stderr)
 
             logger.info(f"Step loop complete: domain={self.domain}, task={self.task.id}")
             result = self._finalize()
