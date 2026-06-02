@@ -412,7 +412,7 @@ async def generate(
         api_key=kwargs.pop("api_key"),
     )
     kwargs.pop("num_retries")
-    logger.info("Entered create chat completion")
+    logger.info(f"Entered create chat completion for {model} at {client.base_url}")
     try:
         response = await client.create_chat_completion(
             model=model,
@@ -425,7 +425,7 @@ async def generate(
         logger.error(e)
         raise e
     finally:
-        logger.info("Exited create chat completion")
+        logger.info(f"Exited create chat completion for {model} at {client.base_url}")
 
     # The Tau2 default will never propogate things like reasoning from vLLM servers
     # We explicitly strip the reasoning from Gym side here
