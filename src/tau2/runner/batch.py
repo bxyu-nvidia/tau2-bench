@@ -35,6 +35,7 @@ from tau2.data_model.simulation import (
 )
 from tau2.data_model.tasks import Task
 from tau2.data_model.voice import SynthesisConfig, VoiceSettings
+from tau2.data_model.voice_personas import warn_if_non_official_voices
 from tau2.evaluator.evaluator import EvaluationType
 from tau2.evaluator.reviewer import check_hallucination, format_hallucination_feedback
 from tau2.metrics.agent_metrics import compute_metrics
@@ -553,7 +554,8 @@ def run_tasks(
         embedder_configs = None
         if retrieval_config:
             embedder_configs = get_unique_embedder_configs_for_retrieval_configs(
-                [retrieval_config]
+                [retrieval_config],
+                kwargs,
             )
         warm_kb_cache(embedder_configs)
         knowledge_base = get_knowledge_base()
@@ -861,6 +863,9 @@ def run_domain(config: RunConfig) -> Results:
     """
     config.validate()
     ConsoleDisplay.display_run_config(config)
+
+    if isinstance(config, VoiceRunConfig):
+        warn_if_non_official_voices()
 
     # Load tasks
     task_set_name = config.task_set_name or config.domain
