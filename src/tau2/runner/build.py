@@ -173,6 +173,7 @@ def build_user(
     }
     if issubclass(UserConstructor, UserSimulator):
         user_kwargs["persona_config"] = persona_config
+        user_kwargs["domain"] = environment.get_domain_name()
 
     return UserConstructor(**user_kwargs)
 

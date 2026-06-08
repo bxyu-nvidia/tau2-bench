@@ -1054,6 +1054,7 @@ class AgentGymEnv(gym.Env):
                 instructions=task.user_scenario,
                 llm=self.user_llm,
                 llm_args=self.user_llm_args,
+                domain=self.domain,
             )
         return user_simulator
 

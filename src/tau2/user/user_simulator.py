@@ -37,6 +37,11 @@ GLOBAL_USER_SIM_GUIDELINES_PATH_TOOLS = (
     GLOBAL_USER_SIM_GUIDELINES_DIR / "simulation_guidelines_tools.md"
 )
 
+DOMAIN_USER_SIM_GUIDELINES_PATHS = {
+    "airline": GLOBAL_USER_SIM_GUIDELINES_DIR / "simulation_guidelines_airline.md",
+    "retail": GLOBAL_USER_SIM_GUIDELINES_DIR / "simulation_guidelines_retail.md",
+}
+
 GLOBAL_USER_SIM_GUIDELINES_PATH_VOICE = (
     GLOBAL_USER_SIM_GUIDELINES_DIR / "simulation_guidelines_voice.md"
 )
@@ -46,22 +51,29 @@ GLOBAL_USER_SIM_GUIDELINES_PATH_VOICE_TOOLS = (
 )
 
 
-def get_global_user_sim_guidelines(use_tools: bool = False) -> str:
+def get_global_user_sim_guidelines(
+    use_tools: bool = False,
+    domain: Optional[str] = None,
+) -> str:
     """
     Get the global user simulator guidelines.
 
     Args:
         use_tools: Whether to use the tools guidelines.
+        domain: Optional domain name for domain-specific no-tool guidelines.
 
     Returns:
         The global user simulator guidelines.
     """
     if use_tools:
-        with open(GLOBAL_USER_SIM_GUIDELINES_PATH_TOOLS, "r") as fp:
-            user_sim_guidelines = fp.read()
+        path = GLOBAL_USER_SIM_GUIDELINES_PATH_TOOLS
+    elif domain in DOMAIN_USER_SIM_GUIDELINES_PATHS:
+        path = DOMAIN_USER_SIM_GUIDELINES_PATHS[domain]
     else:
-        with open(GLOBAL_USER_SIM_GUIDELINES_PATH, "r") as fp:
-            user_sim_guidelines = fp.read()
+        path = GLOBAL_USER_SIM_GUIDELINES_PATH
+
+    with open(path, "r") as fp:
+        user_sim_guidelines = fp.read()
     return user_sim_guidelines
 
 
@@ -118,6 +130,7 @@ class UserSimulator(
         persona_config: Optional[
             PersonaConfig
         ] = None,  # TODO: Should this be pushed to the base class?
+        domain: Optional[str] = None,
     ):
         super().__init__(
             instructions=instructions,
@@ -126,6 +139,7 @@ class UserSimulator(
             llm_args=llm_args,
         )
         self.persona_config = persona_config or PersonaConfig()
+        self.domain = domain
 
     @property
     def global_simulation_guidelines(self) -> str:
@@ -133,7 +147,7 @@ class UserSimulator(
         The simulation guidelines for the user simulator.
         """
         use_tools = self.tools is not None
-        return get_global_user_sim_guidelines(use_tools=use_tools)
+        return get_global_user_sim_guidelines(use_tools=use_tools, domain=self.domain)
 
     @property
     def system_prompt(self) -> str:
