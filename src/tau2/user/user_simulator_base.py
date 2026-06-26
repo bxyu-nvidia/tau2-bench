@@ -39,6 +39,16 @@ class UserError(Exception):
     pass
 
 
+class UserEndpointError(UserError):
+    """
+    The user simulator endpoint failed to produce a response (e.g. auth error,
+    404, or timeout) after exhausting retries. Used to fail a trajectory with a
+    dedicated termination reason without failing the whole eval.
+    """
+
+    pass
+
+
 def is_valid_user_history_message(message: Message) -> bool:
     """Check if the message is a valid user history message."""
     return (

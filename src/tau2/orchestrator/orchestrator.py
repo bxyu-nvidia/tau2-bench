@@ -33,6 +33,7 @@ from tau2.orchestrator.modes import CommunicationMode
 from tau2.user.user_simulator import DummyUser, UserSimulator, UserState
 from tau2.user.user_simulator_base import (
     HalfDuplexUser,
+    UserEndpointError,
     UserError,
     is_valid_user_history_message,
 )
@@ -844,8 +845,22 @@ class Orchestrator(BaseOrchestrator[AgentT, UserT, Message]):
         )
         # AGENT/ENV -> USER
         if self.from_role in [Role.AGENT, Role.ENV] and self.to_role == Role.USER:
-            user_msg, self.user_state = await self.user.generate_next_message(
-                self.message, self.user_state
+            t0 = time.perf_counter()
+            logger.info(f"User request sent (task={self.task.id}, step={self.step_count})")
+            try:
+                user_msg, self.user_state = await self.user.generate_next_message(
+                    self.message, self.user_state
+                )
+            except Exception as e:
+                logger.error(
+                    f"User endpoint failed after retries "
+                    f"(task={self.task.id}, step={self.step_count}, "
+                    f"elapsed={time.perf_counter() - t0:.1f}s): {type(e).__name__}: {e}"
+                )
+                raise UserEndpointError(str(e)) from e
+            logger.info(
+                f"User response received (task={self.task.id}, step={self.step_count}, "
+                f"elapsed={time.perf_counter() - t0:.1f}s)"
             )
             user_msg.validate()
             if UserSimulator.is_stop(user_msg):

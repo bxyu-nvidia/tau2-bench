@@ -1220,6 +1220,7 @@ class TerminationReason(str, Enum):
     TOO_MANY_ERRORS = "too_many_errors"
     AGENT_ERROR = "agent_error"
     USER_ERROR = "user_error"
+    USER_FAILURE = "user_failure"  # User endpoint failed to respond (e.g., auth, 404, timeout) after retries
     INFRASTRUCTURE_ERROR = "infrastructure_error"  # Task failed due to infrastructure (e.g., API disconnect)
     CONTEXT_WINDOW_EXCEEDED = "context_window_exceeded"
     EMPTY_TOOL_CALLS_AND_CONTENT = "empty_tool_calls_and_content"

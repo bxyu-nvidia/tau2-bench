@@ -12,6 +12,7 @@ from loguru import logger
 
 from tau2.data_model.simulation import Results, SimulationRun, TerminationReason
 from tau2.data_model.tasks import Task
+from tau2.user.user_simulator_base import UserEndpointError
 from tau2.utils.display import ConsoleDisplay, Text
 from tau2.utils.utils import get_now
 
@@ -111,6 +112,11 @@ def run_with_retry(
     ConsoleDisplay.console.print(error_text)
 
     now = get_now()
+    termination_reason = (
+        TerminationReason.USER_FAILURE
+        if isinstance(last_exception, UserEndpointError)
+        else TerminationReason.INFRASTRUCTURE_ERROR
+    )
     failed_simulation = SimulationRun(
         id=str(uuid.uuid4()),
         task_id=task.id,
@@ -118,7 +124,7 @@ def run_with_retry(
         start_time=now,
         end_time=now,
         duration=0.0,
-        termination_reason=TerminationReason.INFRASTRUCTURE_ERROR,
+        termination_reason=termination_reason,
         messages=[],
         trial=trial,
         seed=seed,
