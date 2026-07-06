@@ -13,6 +13,7 @@ import asyncio.base_events
 import json
 import multiprocessing
 import os
+import sys
 import random
 import threading
 import uuid
@@ -837,7 +838,38 @@ def run_tasks(
         "\n[bold green]Successfully completed all simulations![/bold green]\n"
         "To review the simulations, run: [bold blue]tau2 view[/bold blue]"
     )
+    _log_empty_user_summary(simulation_results.simulations)
     return simulation_results
+
+
+def _log_empty_user_summary(simulations: list) -> None:
+    """Warn (at end of run) if the user simulator returned empty messages.
+
+    Reads the per-trajectory counters from SimulationRun.info. Grep
+    "EMPTY_USER_MESSAGE summary" for this line.
+    """
+    fallbacks = []
+    total_attempts = 0
+    for sim in simulations:
+        info = getattr(sim, "info", None) or {}
+        total_attempts += info.get("empty_user_response_attempts", 0)
+        fb = info.get("empty_user_response_fallbacks", 0)
+        if fb:
+            fallbacks.append(fb)
+    total_fallbacks = sum(fallbacks)
+    if total_attempts == 0 and total_fallbacks == 0:
+        return
+    msg = (
+        f"EMPTY_USER_MESSAGE summary: attempts(retries)={total_attempts} "
+        f"fallbacks={total_fallbacks} "
+        f"trajectories_with_fallback={len(fallbacks)}/{len(simulations)}"
+    )
+    if fallbacks:
+        msg += (
+            f" fallbacks_per_affected_traj(min/avg/max)="
+            f"{min(fallbacks)}/{total_fallbacks / len(fallbacks):.2f}/{max(fallbacks)}"
+        )
+    print(msg, file=sys.stderr, flush=True)
 
 
 # =============================================================================

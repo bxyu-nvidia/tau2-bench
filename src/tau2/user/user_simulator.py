@@ -1,3 +1,5 @@
+import json
+import sys
 from typing import Generic, Optional, Tuple, TypeVar
 
 from loguru import logger
@@ -265,15 +267,23 @@ class UserSimulator(
                 return user_message
 
             state.empty_user_response_attempts += 1
-            logger.warning(
-                "EMPTY_USER_MESSAGE event=retry attempt={}/{} full_response={}",
-                attempt,
-                max_attempts,
-                assistant_message.model_dump(mode="json"),
+            # print (not loguru): the Gym agent calls logger.remove(), so loguru
+            # warnings are suppressed. print goes to stdout and is always captured.
+            full_response = json.dumps(assistant_message.model_dump(mode="json"), default=str)
+            print(
+                f"EMPTY_USER_MESSAGE event=retry attempt={attempt}/{max_attempts} "
+                f"full_response={full_response}",
+                file=sys.stderr,
+                flush=True,
             )
 
         state.empty_user_response_fallbacks += 1
-        logger.warning("EMPTY_USER_MESSAGE event=fallback attempts={}", max_attempts)
+        print(
+            f"EMPTY_USER_MESSAGE event=fallback attempts={max_attempts} "
+            f"content={EMPTY_USER_FALLBACK_CONTENT!r}",
+            file=sys.stderr,
+            flush=True,
+        )
         return UserMessage(role="user", content=EMPTY_USER_FALLBACK_CONTENT)
 
 
