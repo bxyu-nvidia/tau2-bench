@@ -93,6 +93,10 @@ SYSTEM_PROMPT = """
 """.strip()
 
 
+# Substituted when the user simulator returns empty after all retries.
+EMPTY_USER_FALLBACK_CONTENT = "[silence - user did not respond]"
+
+
 UserStateType = TypeVar("UserStateType", bound="UserState")
 
 
@@ -231,39 +235,46 @@ class UserSimulator(
             state.messages.append(message)
         messages = state.system_messages + state.flip_roles()
 
-        # Generate response
-        assistant_message = await generate(
-            model=self.llm,
-            messages=messages,
-            tools=self.tools,
-            call_name="user_simulator_response",
-            **self.llm_args,
-        )
+        # Reasoning models intermittently return an empty message (no content, no
+        # tool calls), which would fail validate() and crash the rollout. Retry a
+        # few times, then fall back to a placeholder so the agent can recover.
+        # Grep "EMPTY_USER_MESSAGE" for these events.
+        max_attempts = 5
+        for attempt in range(1, max_attempts + 1):
+            assistant_message = await generate(
+                model=self.llm,
+                messages=messages,
+                tools=self.tools,
+                call_name="user_simulator_response",
+                **self.llm_args,
+            )
+            user_message = UserMessage(
+                role="user",
+                content=assistant_message.content,
+                cost=assistant_message.cost,
+                usage=assistant_message.usage,
+                raw_data=assistant_message.raw_data,
+            )
+            if assistant_message.tool_calls is not None:
+                user_message.tool_calls = [
+                    ToolCall(id=tc.id, name=tc.name, arguments=tc.arguments, requestor="user")
+                    for tc in assistant_message.tool_calls
+                ]
+            if user_message.has_content() or user_message.is_tool_call():
+                logger.debug(f"Response: {user_message.content}")
+                return user_message
 
-        user_response = assistant_message.content
-        logger.debug(f"Response: {user_response}")
+            state.empty_user_response_attempts += 1
+            logger.warning(
+                "EMPTY_USER_MESSAGE event=retry attempt={}/{} full_response={}",
+                attempt,
+                max_attempts,
+                assistant_message.model_dump(mode="json"),
+            )
 
-        user_message = UserMessage(
-            role="user",
-            content=user_response,
-            cost=assistant_message.cost,
-            usage=assistant_message.usage,
-            raw_data=assistant_message.raw_data,
-        )
-
-        # flip the requestor of the tool calls
-        if assistant_message.tool_calls is not None:
-            user_message.tool_calls = []
-            for tool_call in assistant_message.tool_calls:
-                user_message.tool_calls.append(
-                    ToolCall(
-                        id=tool_call.id,
-                        name=tool_call.name,
-                        arguments=tool_call.arguments,
-                        requestor="user",
-                    )
-                )
-        return user_message
+        state.empty_user_response_fallbacks += 1
+        logger.warning("EMPTY_USER_MESSAGE event=fallback attempts={}", max_attempts)
+        return UserMessage(role="user", content=EMPTY_USER_FALLBACK_CONTENT)
 
 
 class DummyUser(UserSimulator):
