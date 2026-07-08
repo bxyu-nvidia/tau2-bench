@@ -1234,6 +1234,7 @@ class TerminationReason(str, Enum):
     INFRASTRUCTURE_ERROR = "infrastructure_error"  # Task failed due to infrastructure (e.g., API disconnect)
     CONTEXT_WINDOW_EXCEEDED = "context_window_exceeded"
     EMPTY_TOOL_CALLS_AND_CONTENT = "empty_tool_calls_and_content"
+    EMPTY_USER_MESSAGE = "empty_user_message"
     UNEXPECTED_ERROR = "unexpected_error"
 
 
