@@ -16,6 +16,7 @@ from tau2.scripts.leaderboard.submission import (
     ContactInfo,
     DomainResults,
     Methodology,
+    ModelRelease,
     Reference,
     Results,
     Submission,
@@ -651,6 +652,14 @@ def prepare_submission(
         default="standard",
     )
 
+    reasoning_effort = (
+        Prompt.ask(
+            "Reasoning effort level (e.g. high, medium, low, none, enabled)",
+            default="",
+        )
+        or None
+    )
+
     # Methodology information
     console.print("\n🔬 Methodology information:", style="dim")
     evaluation_date_str = Prompt.ask(
@@ -711,6 +720,49 @@ def prepare_submission(
         )
         references.append(Reference(title=ref_title, url=ref_url, type=ref_type))
         add_reference = Confirm.ask("Add another reference?", default=False)
+
+    # Model release info (optional)
+    console.print(
+        "\n📅 Model release info (optional, used to track progress over time):",
+        style="dim",
+    )
+    model_release: Optional[ModelRelease] = None
+    release_date_str = (
+        Prompt.ask(
+            "Model public release date (YYYY-MM-DD, distinct from evaluation date)",
+            default="",
+        )
+        or None
+    )
+    release_date_value: Optional[date] = None
+    if release_date_str:
+        try:
+            release_date_value = date.fromisoformat(release_date_str)
+        except ValueError:
+            console.print(
+                "  ⚠️  Invalid release date format, skipping model_release.",
+                style="yellow",
+            )
+            release_date_value = None
+
+    if release_date_value is not None:
+        announcement_url = (
+            Prompt.ask(
+                "Announcement URL (blog post, paper, model card, etc.)",
+                default="",
+            )
+            or None
+        )
+        announcement_title = None
+        if announcement_url:
+            announcement_title = (
+                Prompt.ask("Announcement title (link text in UI)", default="") or None
+            )
+        model_release = ModelRelease(
+            release_date=release_date_value,
+            announcement_url=announcement_url,
+            announcement_title=announcement_title,
+        )
 
     # Create submission objects
     contact_info = ContactInfo(email=email, name=contact_name, github=github_username)
@@ -815,6 +867,8 @@ def prepare_submission(
         references=references if references else None,
         methodology=methodology,
         voice_config=voice_config,
+        reasoning_effort=reasoning_effort,
+        model_release=model_release,
     )
 
     submission_file = submission_dir / SUBMISSION_FILE_NAME
