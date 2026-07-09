@@ -95,8 +95,8 @@ SYSTEM_PROMPT = """
 """.strip()
 
 
-# Substituted when the user simulator returns empty after all retries.
-EMPTY_USER_FALLBACK_CONTENT = "[silence - user did not respond]"
+# Number of times to retry the user simulator when it returns an empty message.
+DEFAULT_MAX_USER_RETRIES = 30
 
 
 UserStateType = TypeVar("UserStateType", bound="UserState")
@@ -124,6 +124,7 @@ class UserSimulator(
         persona_config: Optional[
             PersonaConfig
         ] = None,  # TODO: Should this be pushed to the base class?
+        max_user_retries: int = DEFAULT_MAX_USER_RETRIES,
     ):
         super().__init__(
             instructions=instructions,
@@ -132,6 +133,7 @@ class UserSimulator(
             llm_args=llm_args,
         )
         self.persona_config = persona_config or PersonaConfig()
+        self.max_user_retries = max_user_retries
 
     @property
     def global_simulation_guidelines(self) -> str:
@@ -239,9 +241,10 @@ class UserSimulator(
 
         # Reasoning models intermittently return an empty message (no content, no
         # tool calls), which would fail validate() and crash the rollout. Retry a
-        # few times, then fall back to a placeholder so the agent can recover.
+        # few times, then return the empty message so the orchestrator can hard-fail
+        # the trajectory (mirrors how empty agent messages are handled).
         # Grep "EMPTY_USER_MESSAGE" for these events.
-        max_attempts = 5
+        max_attempts = self.max_user_retries
         for attempt in range(1, max_attempts + 1):
             assistant_message = await generate(
                 model=self.llm,
@@ -279,12 +282,13 @@ class UserSimulator(
 
         state.empty_user_response_fallbacks += 1
         print(
-            f"EMPTY_USER_MESSAGE event=fallback attempts={max_attempts} "
-            f"content={EMPTY_USER_FALLBACK_CONTENT!r}",
+            f"EMPTY_USER_MESSAGE event=hard_fail attempts={max_attempts}",
             file=sys.stderr,
             flush=True,
         )
-        return UserMessage(role="user", content=EMPTY_USER_FALLBACK_CONTENT)
+        # Return the last (empty) message; the orchestrator will fail the
+        # trajectory with TerminationReason.EMPTY_USER_MESSAGE.
+        return user_message
 
 
 class DummyUser(UserSimulator):
