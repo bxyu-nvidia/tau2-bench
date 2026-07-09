@@ -357,18 +357,19 @@ class Environment:
         action_responses = get_actions_from_messages(message_history)
         for tool_call, expected_response in action_responses:
             if not self._has_tool(tool_call.name):
-                # The original verification code throws a ValueError when an incorrect tool is found.
-                # We print rather than fail the verification code.
-                print(
-                    f"Unknown tool '{tool_call.name}' encountered during replay. "
-                    "The tool does not exist in the current environment."
+                # Hallucinated tool name. The live env returned a
+                # ToolMessage(error=True) for this call and made no state
+                # change, so replay it as a no-op. The agent's subsequent
+                # recovery (if any) will still be replayed and determine
+                # the final state. Repeated hallucination is bounded
+                # upstream by the orchestrator's max_errors guard, which
+                # ends the live sim with TerminationReason.TOO_MANY_ERRORS
+                # before evaluation runs.
+                logger.debug(
+                    f"Skipping unknown tool '{tool_call.name}' during replay "
+                    "(no-op, matching live env behavior on hallucinated tools)."
                 )
                 continue
-                # raise ValueError(
-                #     f"Unknown tool '{tool_call.name}' encountered during replay. "
-                #     "The tool does not exist in the current environment."
-                # )
-
             # Non-mutating tools (reads, thinks, etc.) don't change state --
             # skip them to avoid re-execution and non-deterministic output
             # comparison issues.

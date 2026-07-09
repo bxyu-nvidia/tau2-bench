@@ -823,6 +823,14 @@ class Orchestrator(BaseOrchestrator[AgentT, UserT, Message]):
             seed=self.seed,
             mode=self.mode.value,
             speech_environment=speech_environment,
+            info={
+                "empty_user_response_attempts": getattr(
+                    self.user_state, "empty_user_response_attempts", 0
+                ),
+                "empty_user_response_fallbacks": getattr(
+                    self.user_state, "empty_user_response_fallbacks", 0
+                ),
+            },
         )
         return simulation_run
 
@@ -847,7 +855,23 @@ class Orchestrator(BaseOrchestrator[AgentT, UserT, Message]):
             user_msg, self.user_state = await self.user.generate_next_message(
                 self.message, self.user_state
             )
-            user_msg.validate()
+            # Catch empty/malformed user messages — the user simulator retries a
+            # bounded number of times and then returns the empty message. We preserve
+            # it for debugging (mirrors the empty-agent-message path) and terminate.
+            try:
+                user_msg.validate()
+            except Exception as e:
+                logger.warning(
+                    f"User returned an empty / malformed message — preserving for debug. "
+                    f"content={getattr(user_msg, 'content', None)!r}, "
+                    f"tool_calls={getattr(user_msg, 'tool_calls', None)!r}, "
+                    f"validate_error={e}"
+                )
+                self.trajectory.append(user_msg)
+                self.message = user_msg
+                self.done = True
+                self.termination_reason = TerminationReason.EMPTY_USER_MESSAGE
+                return
             if UserSimulator.is_stop(user_msg):
                 self.done = True
                 self.termination_reason = TerminationReason.USER_STOP
