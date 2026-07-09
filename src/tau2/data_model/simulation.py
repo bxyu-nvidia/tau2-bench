@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Literal, Optional, Union
 
 import pandas as pd
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field
 from typing_extensions import Annotated
 
 if TYPE_CHECKING:
@@ -83,10 +83,6 @@ class AudioNativeConfig(BaseModel):
     model: str = Field(
         default=DEFAULT_AUDIO_NATIVE_MODELS[DEFAULT_AUDIO_NATIVE_PROVIDER],
         description="Audio native model to use",
-    )
-    reasoning_effort: Optional[str] = Field(
-        default=None,
-        description="Reasoning effort for thinking models: 'minimal', 'low', 'medium', 'high'. If None, not sent.",
     )
 
     # Timing configuration
@@ -455,13 +451,6 @@ class BaseRunConfig(BaseModel):
     ]
 
     # ---- Abstract-ish properties (subclasses must override) ----
-
-    @model_validator(mode="after")
-    def _default_banking_retrieval_config(self) -> "BaseRunConfig":
-        """Default retrieval_config to alltools for banking_knowledge."""
-        if self.domain == "banking_knowledge" and self.retrieval_config is None:
-            object.__setattr__(self, "retrieval_config", "alltools")
-        return self
 
     @property
     def effective_agent(self) -> str:

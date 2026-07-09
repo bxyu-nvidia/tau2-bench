@@ -115,29 +115,17 @@ class Description(BaseModel):
 
 class Action(BaseModel):
     """
-    Descriptor for a tool call by the agent or the user.
-
-    Used in two contexts:
-
-    - `EvaluationCriteria.actions`: one reference trajectory replayed to
-      derive the target DB end state. Not a per-call requirement on the
-      agent unless `RewardType.ACTION` is in `reward_basis`. See
-      `docs/evaluation.md`.
-    - `InitialState.initialization_actions`: replayed before the
-      simulation to set up the initial state.
-
-    `compare_with_tool_call` matches an action against a tool call using
-    `compare_args` (or all arguments if `compare_args` is None). It is
-    only consulted by `ActionEvaluator`.
-
+    An Agent/User action.
     Example:
       {
-        "action_id": "get_user_details_1",
-        "requestor": "assistant",
-        "name": "get_user_details",
-        "arguments": {"user_id": "sophia_silva_7557"},
-        "compare_args": ["user_id"]
-      }
+      "action_id": "get_user_details_1",
+      "requestor": "assistant",
+      "name": "get_user_details",
+      "arguments": { "user_id": "sophia_silva_7557", "note": "I need to get the user details for user_id: sophia_silva_7557" },
+      "compare_args": ["user_id"]
+    },
+    A tool call can be compared with an action by comparing the arguments in compare_args.
+    If compare_args is None, will check all the arguments.
     """
 
     action_id: str = Field(
@@ -235,31 +223,6 @@ class EnvAssertion(EnvFunctionCall):
 
 
 class RewardType(str, Enum):
-    """
-    Components that can gate a task's final reward.
-
-    The final reward is the product of every component listed in
-    `EvaluationCriteria.reward_basis`. Components not listed are not
-    included (they may still run for diagnostics). Default basis is
-    `[DB, COMMUNICATE]`, matching the original τ-bench.
-
-    - DB: predicted DB end state matches the target. Target is the
-      result of replaying `EvaluationCriteria.actions` on a fresh env;
-      any agent path producing an equivalent end state passes.
-    - ENV_ASSERTION: all `env_assertions` pass on the predicted env.
-    - COMMUNICATE: every `communicate_info` string appears (substring)
-      in the agent's messages.
-    - NL_ASSERTION: every `nl_assertions` entry is judged true by an
-      LLM (experimental / WIP).
-    - ACTION: every entry in `actions` is matched by an agent tool call
-      (per `Action.compare_with_tool_call`). The only reward type that
-      makes the action list a hard requirement — promotes it to the
-      assumed-unique correct trajectory. Used in a few
-      `banking_knowledge` tasks; not used in airline/retail/telecom.
-
-    See `docs/evaluation.md`.
-    """
-
     DB = "DB"
     ENV_ASSERTION = "ENV_ASSERTION"
     NL_ASSERTION = "NL_ASSERTION"
@@ -365,25 +328,13 @@ class TaskIssue(BaseModel):
 
 class EvaluationCriteria(BaseModel):
     """
-    Evaluation criteria for a task. Sent to the evaluator.
-
-    `reward_basis` controls which fields gate the reward; other
-    populated fields run as diagnostics only. In particular, `actions`
-    is one reference trajectory used to derive the target DB end state
-    — not a per-call requirement on the agent unless `RewardType.ACTION`
-    is in `reward_basis`. See `docs/evaluation.md`.
+    Evaluation criteria for a particular task. This will be sent to the evaluator.
     """
 
     actions: Annotated[
         Optional[list[Action]],
         Field(
-            description=(
-                "One reference trajectory that solves the task. Replayed "
-                "on a fresh env by `EnvironmentEvaluator` to derive the "
-                "target DB hash. The agent may take any path producing "
-                "an equivalent end state — these specific calls are only "
-                "required when `RewardType.ACTION` is in `reward_basis`."
-            ),
+            description="The actions that the agent should take to complete the task.",
             default=None,
         ),
     ]
@@ -391,11 +342,7 @@ class EvaluationCriteria(BaseModel):
     env_assertions: Annotated[
         Optional[list[EnvAssertion]],
         Field(
-            description=(
-                "Assertions on the predicted environment. Gates the "
-                "reward only when `RewardType.ENV_ASSERTION` is in "
-                "`reward_basis`."
-            ),
+            description="List of assertions on the agent or user environment.",
             default=None,
         ),
     ]
@@ -403,11 +350,7 @@ class EvaluationCriteria(BaseModel):
     communicate_info: Annotated[  # TODO: Deprecate this
         Optional[list[str]],
         Field(
-            description=(
-                "Strings the agent must say to the user (substring "
-                "match). Gates the reward only when "
-                "`RewardType.COMMUNICATE` is in `reward_basis`."
-            ),
+            description="List of information that the agent should communicate to the user.",
             default=None,
         ),
     ]
@@ -415,11 +358,7 @@ class EvaluationCriteria(BaseModel):
     nl_assertions: Annotated[
         Optional[list[str]],
         Field(
-            description=(
-                "Natural-language assertions judged by an LLM. Gates the "
-                "reward only when `RewardType.NL_ASSERTION` is in "
-                "`reward_basis` (experimental / WIP)."
-            ),
+            description="List of assertions for the task, in natural language.",
             default=None,
         ),
     ]
@@ -427,11 +366,7 @@ class EvaluationCriteria(BaseModel):
     reward_basis: Annotated[
         list[RewardType],
         Field(
-            description=(
-                "Components that gate the final reward (their per-component "
-                "rewards are multiplied). Default `[DB, COMMUNICATE]` "
-                "matches the original τ-bench."
-            ),
+            description="The basis of the reward. This will be used to determine the reward for the task.",
             default_factory=lambda: [RewardType.DB, RewardType.COMMUNICATE],
         ),
     ]

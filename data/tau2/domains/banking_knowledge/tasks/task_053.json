@@ -169,9 +169,7 @@
     ]
   },
   "annotations": null,
-  "user_tools": [
-    "call_discoverable_user_tool"
-  ],
+  "user_tools": [],
   "required_documents": [
     "doc_credit_cards_credit_card_account_logistics_004",
     "doc_credit_cards_credit_card_account_logistics_005",

@@ -96,7 +96,6 @@ class DiscreteTimeGeminiAdapter(DiscreteTimeAdapter):
         tick_duration_ms: int,
         send_audio_instant: bool = True,
         model: Optional[str] = None,
-        reasoning_effort: Optional[str] = None,
         provider: Optional[GeminiLiveProvider] = None,
         max_resumptions: int = 3,
         resume_only_on_timeout: bool = True,
@@ -133,7 +132,6 @@ class DiscreteTimeGeminiAdapter(DiscreteTimeAdapter):
             raise ValueError("model and provider cannot be provided together")
 
         self.model = model
-        self.reasoning_effort = reasoning_effort
         self._max_resumptions = max_resumptions
         self._resume_only_on_timeout = resume_only_on_timeout
 
@@ -160,7 +158,6 @@ class DiscreteTimeGeminiAdapter(DiscreteTimeAdapter):
         if self._provider is None:
             self._provider = GeminiLiveProvider(
                 model=self.model,
-                reasoning_effort=self.reasoning_effort,
                 max_resumptions=self._max_resumptions,
                 resume_only_on_timeout=self._resume_only_on_timeout,
             )
