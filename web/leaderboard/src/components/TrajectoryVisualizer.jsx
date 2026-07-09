@@ -5,8 +5,6 @@ import './TrajectoryVisualizer.css'
 const SUBMISSIONS_BASE = import.meta.env.VITE_SUBMISSIONS_BASE_URL
   || `${import.meta.env.BASE_URL}submissions`
 
-const NO_CACHE = { cache: 'no-cache' }
-
 const S3_BUCKET = 'sierra-tau-bench-public'
 const S3_SUBMISSIONS_PREFIX = 'submissions'
 
@@ -133,7 +131,7 @@ const TrajectoryVisualizer = () => {
     const loadSubmissions = async () => {
       try {
         setSubmissionsLoading(true)
-        const res = await fetch(`${SUBMISSIONS_BASE}/manifest.json`, NO_CACHE)
+        const res = await fetch(`${SUBMISSIONS_BASE}/manifest.json`)
         if (!res.ok) throw new Error('Failed to load manifest')
         const manifest = await res.json()
         const textDirs = manifest.submissions || []
@@ -143,7 +141,7 @@ const TrajectoryVisualizer = () => {
 
         const loadDir = async (dir, modality) => {
           try {
-            const r = await fetch(`${SUBMISSIONS_BASE}/${dir}/submission.json`, NO_CACHE)
+            const r = await fetch(`${SUBMISSIONS_BASE}/${dir}/submission.json`)
             if (!r.ok) return
             const sub = await r.json()
             if (sub.trajectories_available && sub.trajectory_files) {
@@ -234,7 +232,7 @@ const TrajectoryVisualizer = () => {
         const url = sub.modality === 'voice'
           ? `${SUBMISSIONS_BASE}/${sub.dir}/trajectories/${fileName}/results.json`
           : `${SUBMISSIONS_BASE}/${sub.dir}/trajectories/${fileName}`
-        const res = await fetch(url, NO_CACHE)
+        const res = await fetch(url)
         if (!res.ok) throw new Error(`Failed to load trajectory: ${res.statusText}`)
         const data = await res.json()
 
@@ -567,7 +565,7 @@ const TrajectoryVisualizer = () => {
                   <optgroup label="τ-bench (Text)">
                     {submissions.filter(s => s.modality === 'text').map(s => (
                       <option key={s.dir} value={s.dir}>
-                        {s.model_name}{s.reasoning_effort ? ` [${s.reasoning_effort.charAt(0).toUpperCase() + s.reasoning_effort.slice(1)}]` : ''} ({s.model_organization})
+                        {s.model_name}{s.reasoning_effort ? ` [${s.reasoning_effort}]` : ''} ({s.model_organization})
                       </option>
                     ))}
                   </optgroup>
@@ -663,7 +661,7 @@ const TrajectoryVisualizer = () => {
                   <div className="task-list-header-left">
                     <h3>
                       {isVoice && <span className="voice-badge">🎙️ Voice</span>}
-                      {currentSubmission?.model_name}{currentSubmission?.reasoning_effort ? ` [${currentSubmission.reasoning_effort.charAt(0).toUpperCase() + currentSubmission.reasoning_effort.slice(1)}]` : ''} — {selectedDomain.charAt(0).toUpperCase() + selectedDomain.slice(1)}
+                      {currentSubmission?.model_name}{currentSubmission?.reasoning_effort ? ` [${currentSubmission.reasoning_effort}]` : ''} — {selectedDomain.charAt(0).toUpperCase() + selectedDomain.slice(1)}
                     </h3>
                     <p className="task-list-subtitle">
                       {tasks.length} tasks · {numTrials} trial{numTrials !== 1 ? 's' : ''} each

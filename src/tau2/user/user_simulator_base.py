@@ -58,11 +58,6 @@ class UserState(BaseModel):
 
     system_messages: list[SystemMessage]
     messages: list[APICompatibleMessage]
-    # Observability for empty/malformed user-simulator responses (per trajectory).
-    # attempts = every empty generation (incl. retries); fallbacks = turns that
-    # exhausted retries and used the "[silence...]" placeholder.
-    empty_user_response_attempts: int = 0
-    empty_user_response_fallbacks: int = 0
 
     def flip_roles(self) -> list[APICompatibleMessage]:
         """

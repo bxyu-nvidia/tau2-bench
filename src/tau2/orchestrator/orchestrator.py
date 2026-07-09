@@ -823,14 +823,6 @@ class Orchestrator(BaseOrchestrator[AgentT, UserT, Message]):
             seed=self.seed,
             mode=self.mode.value,
             speech_environment=speech_environment,
-            info={
-                "empty_user_response_attempts": getattr(
-                    self.user_state, "empty_user_response_attempts", 0
-                ),
-                "empty_user_response_fallbacks": getattr(
-                    self.user_state, "empty_user_response_fallbacks", 0
-                ),
-            },
         )
         return simulation_run
 

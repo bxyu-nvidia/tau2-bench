@@ -27,27 +27,21 @@
     "retail": "retail_regular",
     "telecom": "telecom_regular"
   },
-  "reasoning_effort": "high",
   "methodology": {
     "evaluation_date": "2026-04-02",
     "tau2_bench_version": "1.0.0",
     "user_simulator": "v1.0",
-    "notes": "Evaluated using Gemini 3.1 Flash Live Preview with thinking = HIGH.",
     "verification": {
       "modified_prompts": false,
-      "omitted_questions": false
+      "omitted_questions": false,
+      "details": "Ran with thinking = HIGH."
     }
   },
   "voice_config": {
-    "provider": "Google",
+    "provider": "gemini",
     "model": "gemini-3.1-flash-live-preview",
     "tick_duration_seconds": 0.2,
     "max_steps_seconds": 600.0,
     "user_tts_provider": "elevenlabs/eleven_v3"
-  },
-  "model_release": {
-    "release_date": "2026-03-26",
-    "announcement_url": "https://blog.google/innovation-and-ai/models-and-research/gemini-models/gemini-3-1-flash-live/",
-    "announcement_title": "Gemini 3.1 Flash Live: Google's latest AI audio model"
   }
 }
