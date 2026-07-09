@@ -35,6 +35,7 @@ from tau2.data_model.simulation import (
 )
 from tau2.data_model.tasks import Task
 from tau2.data_model.voice import SynthesisConfig, VoiceSettings
+from tau2.data_model.voice_personas import warn_if_non_official_voices
 from tau2.evaluator.evaluator import EvaluationType
 from tau2.evaluator.reviewer import check_hallucination, format_hallucination_feedback
 from tau2.metrics.agent_metrics import compute_metrics
@@ -334,7 +335,7 @@ class _TaskLogContext:
 # =============================================================================
 
 
-def run_single_task(
+async def run_single_task(
     config: RunConfig,
     task: Task,
     *,
@@ -375,15 +376,6 @@ def run_single_task(
     Returns:
         The completed SimulationRun with reward_info attached.
     """
-    import json
-    from pathlib import Path
-
-    to_dump = locals().copy()
-    del to_dump["json"], to_dump["Path"]
-    to_dump["config"] = to_dump["config"].model_dump()
-    to_dump["task"] = to_dump["task"].model_dump()
-    to_dump["save_dir"] = None
-
     simulation_id = str(uuid.uuid4())
     is_voice = isinstance(config, VoiceRunConfig)
 
@@ -417,34 +409,9 @@ def run_single_task(
             audio_taps_dir=taps_dir,
         )
 
-        tools = []
-        for tool in orchestrator.environment.get_tools():
-            chat_completions_tool = tool.openai_schema
-            responses_tool = {
-                "type": "function",
-                **chat_completions_tool["function"],
-                "strict": True,
-            }
-            tools.append(responses_tool)
-
-        to_dump["responses_create_params"] = {
-            "input": [
-                {"role": "system", "content": m.content} for m in orchestrator.agent.get_init_state().system_messages
-            ],
-            "tools": tools,
-        }
-        # TODO eventually we may need/want this
-        # to_dump["policy"] = orchestrator.environment.get_policy()
-
-        output_path = Path(f"nemo_gym_data/{config.domain}/{task.id}.json")
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        with output_path.open("w") as f:
-            json.dump(to_dump, f, indent=4)
-        return
-
         # Layer 1: Run the simulation
         env_kwargs = _build_env_kwargs(config, task) or None
-        simulation = run_simulation(
+        simulation = await run_simulation(
             orchestrator, evaluation_type=evaluation_type, env_kwargs=env_kwargs
         )
 
@@ -492,7 +459,7 @@ def run_tasks(
     *,
     save_path: Optional[Path] = None,
     save_dir: Optional[Path] = None,
-    evaluation_type: EvaluationType = EvaluationType.ALL_WITH_NL_ASSERTIONS,
+    evaluation_type: EvaluationType = EvaluationType.ALL,
     console_display: bool = True,
     results_format: str = "json",
 ) -> Results:
@@ -586,7 +553,8 @@ def run_tasks(
         embedder_configs = None
         if retrieval_config:
             embedder_configs = get_unique_embedder_configs_for_retrieval_configs(
-                [retrieval_config]
+                [retrieval_config],
+                kwargs,
             )
         warm_kb_cache(embedder_configs)
         knowledge_base = get_knowledge_base()
@@ -659,6 +627,12 @@ def run_tasks(
     # (which get a fresh default context) can re-apply them.
     _main_thread_llm_log_mode = llm_log_mode.get()
 
+    # Imported lazily so the data-dump path (which imports tau2.runner.build but
+    # never calls run_tasks) does not require nemo_gym in its isolated venv.
+    from nemo_gym.global_config import GlobalConfigDictParserConfig, set_global_config_dict
+
+    set_global_config_dict(global_config_dict_parser_config=GlobalConfigDictParserConfig(skip_load_from_cli=True, skip_load_from_dotenv=True))
+
     def _run_tracked(
         task: Task, trial: int, seed: int, progress_str: str
     ) -> SimulationRun:
@@ -677,11 +651,11 @@ def run_tasks(
         )
         ConsoleDisplay.console.print(console_text)
 
-        def _execute(
+        async def _execute(
             run_seed: int = seed,
             hallucination_feedback: Optional[str] = None,
         ):
-            return run_single_task(
+            return await run_single_task(
                 config,
                 task,
                 seed=run_seed,
@@ -892,6 +866,9 @@ def run_domain(config: RunConfig) -> Results:
     """
     config.validate()
     ConsoleDisplay.display_run_config(config)
+
+    if isinstance(config, VoiceRunConfig):
+        warn_if_non_official_voices()
 
     # Load tasks
     task_set_name = config.task_set_name or config.domain

@@ -222,5 +222,7 @@ data/simulations/.credentials/
 #   After deleting the branches, GitHub will eventually GC the orphaned objects.
 *_simulation.json
 
+# Cursor IDE
+.cursor/
 nemo_gym_data
 results

@@ -1,39 +1,11 @@
-uv venv --python 3.12 .venv --allow-existing
-source .venv/bin/activate
-uv sync --active
+#!/usr/bin/env bash
+set -euo pipefail
 
-tau2 run \
-    --domain airline \
-    --agent-llm dummy \
-    --agent-llm-args "{\"api_base\": \"dummy\", \"api_key\": \"EMPTY\"}" \
-    --user-llm dummy \
-    --num-trials 1 \
-    --max-retries 1 \
-    --max-concurrency 256 \
-    --seed 42 \
-    --save-to $(pwd)/results/airline \
-    --auto-resume
+if [[ "${TAU2_SKIP_UV_SYNC:-0}" != "1" ]]; then
+    uv venv --python 3.12 .venv --allow-existing
+    source .venv/bin/activate
+    uv sync --active --extra knowledge
+fi
 
-tau2 run \
-    --domain telecom \
-    --agent-llm dummy \
-    --agent-llm-args "{\"api_base\": \"dummy\", \"api_key\": \"EMPTY\"}" \
-    --user-llm dummy \
-    --num-trials 1 \
-    --max-retries 1 \
-    --max-concurrency 256 \
-    --seed 42 \
-    --save-to $(pwd)/results/telecom \
-    --auto-resume
-
-tau2 run \
-    --domain retail \
-    --agent-llm dummy \
-    --agent-llm-args "{\"api_base\": \"dummy\", \"api_key\": \"EMPTY\"}" \
-    --user-llm dummy \
-    --num-trials 1 \
-    --max-retries 1 \
-    --max-concurrency 256 \
-    --seed 42 \
-    --save-to $(pwd)/results/retail \
-    --auto-resume
+PYTHON_BIN="${TAU2_DUMP_PYTHON:-python}"
+PYTHONPATH="$(pwd)/src${PYTHONPATH:+:${PYTHONPATH}}" "${PYTHON_BIN}" dump_nemo_gym_data.py "$@"
