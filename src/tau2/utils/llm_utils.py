@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import os
@@ -101,6 +102,60 @@ if LLM_CACHE_ENABLED:
 else:
     logger.info("LiteLLM: Cache is disabled")
     litellm.disable_cache()
+
+
+async def _create_chat_completion(
+    *,
+    api_base: str,
+    api_key: str,
+    payload: dict[str, Any],
+    num_retries: int,
+    retry_max_sleep_s: float = 0.5,
+) -> dict[str, Any]:
+    """Call an OpenAI-compatible chat endpoint without sharing async clients.
+
+    Tau2 runs simulations through ThreadPoolExecutor workers and wraps each
+    simulation in asyncio.run(). A shared async client can therefore hold state
+    from a different event loop and fail under concurrent simulations.
+    """
+    retry_statuses = {429, 500, 502, 503, 504}
+    url = f"{api_base.rstrip('/')}/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+    attempts = max(1, num_retries)
+
+    async with httpx.AsyncClient(timeout=None) as client:
+        for attempt in range(1, attempts + 1):
+            response = await client.post(url, json=payload, headers=headers)
+            if response.status_code in retry_statuses and attempt < attempts:
+                retry_after = response.headers.get("Retry-After")
+                if retry_after:
+                    try:
+                        sleep_s = min(
+                            max(retry_max_sleep_s * 2, 120.0), float(retry_after)
+                        )
+                    except ValueError:
+                        sleep_s = retry_max_sleep_s
+                else:
+                    sleep_s = min(retry_max_sleep_s, 2.0**attempt)
+                logger.warning(
+                    "LLM request retry {}/{} for {} after HTTP {} (sleep {}s): {}",
+                    attempt,
+                    attempts,
+                    url,
+                    response.status_code,
+                    sleep_s,
+                    response.text[:200],
+                )
+                await asyncio.sleep(sleep_s)
+                continue
+
+            response.raise_for_status()
+            return response.json()
+
+    raise RuntimeError(f"LLM request failed after {attempts} attempts: {url}")
 
 
 def _parse_ft_model_name(model: str) -> str:
@@ -352,7 +407,7 @@ def _write_llm_log(
         json.dump(call_data, f, indent=2)
 
 
-def generate(
+async def generate(
     model: str,
     messages: list[Message],
     tools: Optional[list[Tool]] = None,
@@ -405,19 +460,47 @@ def generate(
     request_timestamp = datetime.now().isoformat()
 
     start_time = time.perf_counter()
+    api_base = kwargs.pop("api_base")
+    api_key = kwargs.pop("api_key")
+    num_retries = kwargs.pop("num_retries")
+    retry_max_sleep_s = kwargs.pop("retry_max_sleep_s", 0.5)
+    payload: dict[str, Any] = {
+        "model": model,
+        "messages": litellm_messages,
+        **kwargs,
+    }
+    if tools_schema is not None:
+        payload["tools"] = tools_schema
+    if tool_choice is not None:
+        payload["tool_choice"] = tool_choice
+
     try:
-        response = completion(
-            model=model,
-            messages=litellm_messages,
-            tools=tools_schema,
-            tool_choice=tool_choice,
-            **kwargs,
+        response = await _create_chat_completion(
+            api_base=api_base,
+            api_key=api_key,
+            payload=payload,
+            num_retries=num_retries,
+            retry_max_sleep_s=retry_max_sleep_s,
         )
     except Exception as e:
         logger.error(e)
         raise e
+
+    # The Tau2 default will never propogate things like reasoning from vLLM servers
+    # We explicitly strip the reasoning from Gym side here
+    content: Optional[str] = response["choices"][0]["message"]["content"]
+    reasoning_content: Optional[str] = None
+    if content is not None and "</think>" in content:
+        new_content = content.rsplit("</think>", maxsplit=1)[1]
+        reasoning_content = content[:-len(new_content)]
+        response["choices"][0]["message"]["content"] = new_content.strip()
+        response["choices"][0]["message"]["reasoning_content"] = reasoning_content
+
+    response = ModelResponse.model_validate(response)
+
     generation_time_seconds = time.perf_counter() - start_time
-    cost = get_response_cost(response)
+    # cost = get_response_cost(response)
+    cost = 0.0
     usage = get_response_usage(response)
 
     response_choice = response.choices[0]
