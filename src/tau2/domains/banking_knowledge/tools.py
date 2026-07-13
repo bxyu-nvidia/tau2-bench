@@ -1032,6 +1032,11 @@ class KnowledgeTools(ToolKitBase):
             return f"Error: Invalid card_action. Must be one of: {valid_card_actions}"
 
         # Validate disputed_amount is positive
+        try:
+            disputed_amount = float(disputed_amount)
+        except (ValueError, TypeError):
+            return f"Error: Invalid disputed_amount '{disputed_amount}'. Must be a number."
+
         if disputed_amount <= 0:
             return "Error: disputed_amount must be a positive number."
 
@@ -1661,6 +1666,11 @@ For deposits without available images, the dispute will proceed based on custome
         if not user_id or not credit_card_account_id or amount is None or not reason:
             return "Error: Missing required parameters (user_id, credit_card_account_id, amount, reason)."
 
+        try:
+            amount = float(amount)
+        except (ValueError, TypeError):
+            return f"Error: Invalid amount '{amount}'. Must be a number."
+
         if amount <= 0:
             return "Error: Credit amount must be positive."
 
@@ -1989,6 +1999,11 @@ For deposits without available images, the dispute will proceed based on custome
             or requested_increase_amount is None
         ):
             return "Error: Missing required parameters."
+
+        try:
+            requested_increase_amount = int(requested_increase_amount)
+        except (ValueError, TypeError):
+            return f"Error: Invalid requested_increase_amount '{requested_increase_amount}'. Must be an integer."
 
         if requested_increase_amount <= 0:
             return "Error: Requested increase amount must be positive."
@@ -2711,6 +2726,11 @@ For deposits without available images, the dispute will proceed based on custome
         if not account_id or amount is None or not credit_type:
             return "Error: Missing required parameters."
 
+        try:
+            amount = float(amount)
+        except (ValueError, TypeError):
+            return f"Error: Invalid amount '{amount}'. Must be a number."
+
         if amount <= 0:
             return "Error: Credit amount must be positive."
 
@@ -2789,6 +2809,11 @@ For deposits without available images, the dispute will proceed based on custome
         """
         if not account_id or amount is None or not credit_type:
             return "Error: Missing required parameters."
+
+        try:
+            amount = float(amount)
+        except (ValueError, TypeError):
+            return f"Error: Invalid amount '{amount}'. Must be a number."
 
         if amount <= 0:
             return "Error: Credit amount must be positive."
