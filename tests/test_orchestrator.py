@@ -719,9 +719,7 @@ def test_agent_steps_remaining_notice_persisted_only_in_agent_messages_for_user_
         message.content or "" for message in simulation_run.agent_messages
     ]
     assert "hello" in persisted_contents
-    assert all(
-        "ENVIRONMENT REMINDER" not in content for content in persisted_contents
-    )
+    assert all("ENVIRONMENT REMINDER" not in content for content in persisted_contents)
     assert any("ENVIRONMENT REMINDER" in content for content in agent_contents)
 
 
@@ -766,9 +764,7 @@ def test_agent_steps_remaining_notice_persisted_only_in_agent_messages_for_tool_
         message.content or "" for message in simulation_run.agent_messages
     ]
     assert "env output" in persisted_contents
-    assert all(
-        "ENVIRONMENT REMINDER" not in content for content in persisted_contents
-    )
+    assert all("ENVIRONMENT REMINDER" not in content for content in persisted_contents)
     assert any("ENVIRONMENT REMINDER" in content for content in agent_contents)
 
 
@@ -845,10 +841,10 @@ def test_agent_init_history_reconstructs_reminders_without_user_leak(
 
     orchestrator.initialize()
 
-    agent_contents = [
-        message.content or "" for message in agent.init_message_history
+    agent_contents = [message.content or "" for message in agent.init_message_history]
+    user_contents = [
+        message.content or "" for message in orchestrator.user_state.messages
     ]
-    user_contents = [message.content or "" for message in orchestrator.user_state.messages]
 
     assert orchestrator.agent_steps_count == 1
     assert (

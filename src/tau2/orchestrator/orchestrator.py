@@ -282,8 +282,14 @@ class BaseOrchestrator(ABC, Generic[BaseAgentT, BaseUserT, TrajectoryItemT]):
                 await self.step()
                 self._check_termination()
 
-                if self.step_count % 10 == 0 and getenv("NEMO_GYM_TAU2_STEP_COUNT_PRINT") == "true":
-                    print(f"Task ID {self.task.id} step {self.step_count} ({time.perf_counter() - self._run_start_perf:.2f}s)", file=sys.stderr)
+                if (
+                    self.step_count % 10 == 0
+                    and getenv("NEMO_GYM_TAU2_STEP_COUNT_PRINT") == "true"
+                ):
+                    print(
+                        f"Task ID {self.task.id} step {self.step_count} ({time.perf_counter() - self._run_start_perf:.2f}s)",
+                        file=sys.stderr,
+                    )
 
             result = self._finalize()
             finalized = True
@@ -782,9 +788,7 @@ class Orchestrator(BaseOrchestrator[AgentT, UserT, Message]):
 
         if agent_steps_count is None:
             agent_steps_count = self.agent_steps_count
-        remaining_agent_steps = max(
-            self.max_agent_steps - agent_steps_count, 0
-        )
+        remaining_agent_steps = max(self.max_agent_steps - agent_steps_count, 0)
         return AGENT_STEPS_REMAINING_NOTICE_TEMPLATE.format(
             remaining_agent_steps=remaining_agent_steps
         )
@@ -942,9 +946,7 @@ class Orchestrator(BaseOrchestrator[AgentT, UserT, Message]):
             speech_environment = self.user.voice_settings.speech_environment
 
         agent_steps_budget = (
-            "unlimited"
-            if self.max_agent_steps is None
-            else str(self.max_agent_steps)
+            "unlimited" if self.max_agent_steps is None else str(self.max_agent_steps)
         )
         logger.info(
             f"Simulation {self.simulation_id} used {self.agent_steps_count} "
@@ -970,6 +972,14 @@ class Orchestrator(BaseOrchestrator[AgentT, UserT, Message]):
             seed=self.seed,
             mode=self.mode.value,
             speech_environment=speech_environment,
+            info={
+                "empty_user_response_attempts": getattr(
+                    self.user_state, "empty_user_response_attempts", 0
+                ),
+                "empty_user_response_fallbacks": getattr(
+                    self.user_state, "empty_user_response_fallbacks", 0
+                ),
+            },
         )
         return simulation_run
 
@@ -994,7 +1004,23 @@ class Orchestrator(BaseOrchestrator[AgentT, UserT, Message]):
             user_msg, self.user_state = await self.user.generate_next_message(
                 self.message, self.user_state
             )
-            user_msg.validate()
+            # Catch empty/malformed user messages — the user simulator retries a
+            # bounded number of times and then returns the empty message. We preserve
+            # it for debugging (mirrors the empty-agent-message path) and terminate.
+            try:
+                user_msg.validate()
+            except Exception as e:
+                logger.warning(
+                    f"User returned an empty / malformed message — preserving for debug. "
+                    f"content={getattr(user_msg, 'content', None)!r}, "
+                    f"tool_calls={getattr(user_msg, 'tool_calls', None)!r}, "
+                    f"validate_error={e}"
+                )
+                self.trajectory.append(user_msg)
+                self.message = user_msg
+                self.done = True
+                self.termination_reason = TerminationReason.EMPTY_USER_MESSAGE
+                return
             if UserSimulator.is_stop(user_msg):
                 self.done = True
                 self.termination_reason = TerminationReason.USER_STOP
@@ -1024,12 +1050,25 @@ class Orchestrator(BaseOrchestrator[AgentT, UserT, Message]):
             agent_msg, self.agent_state = await self.agent.generate_next_message(
                 agent_input_message, self.agent_state
             )
-            # Catch context window exceeded errors -- NeMo Gym OpenAI client will return an empty message
+            # Catch malformed agent responses — NeMo Gym OpenAI client returns an empty
+            # message (no content + no tool calls) in several edge cases (context window
+            # exceeded, model produces only </think> reasoning then nothing, etc.).
+            # We append the malformed message to the trajectory FIRST so its reasoning_content
+            # (and any other diagnostic data) survives in logs/output, then terminate cleanly.
             try:
                 agent_msg.validate()
-            except Exception:
+            except Exception as e:
+                logger.warning(
+                    f"Agent returned an empty / malformed message — preserving for debug. "
+                    f"reasoning_content={getattr(agent_msg, 'reasoning_content', None)!r}, "
+                    f"content={getattr(agent_msg, 'content', None)!r}, "
+                    f"tool_calls={getattr(agent_msg, 'tool_calls', None)!r}, "
+                    f"validate_error={e}"
+                )
+                self.trajectory.append(agent_msg)
+                self.message = agent_msg
                 self.done = True
-                self.termination_reason = TerminationReason.CONTEXT_WINDOW_EXCEEDED
+                self.termination_reason = TerminationReason.EMPTY_TOOL_CALLS_AND_CONTENT
                 return
 
             self.agent_steps_count += 1
@@ -1121,10 +1160,7 @@ class Orchestrator(BaseOrchestrator[AgentT, UserT, Message]):
             if isinstance(msg, AssistantMessage):
                 agent_msg = deepcopy(msg)
                 agent_messages.append(agent_msg)
-                if (
-                    not seen_agent_message
-                    and agent_msg == DEFAULT_FIRST_AGENT_MESSAGE
-                ):
+                if not seen_agent_message and agent_msg == DEFAULT_FIRST_AGENT_MESSAGE:
                     seen_agent_message = True
                     continue
                 seen_agent_message = True

@@ -1,12 +1,15 @@
 import React, { useState, useEffect } from 'react'
 import './Leaderboard.css'
+import ProgressView from './ProgressView'
 
 const BENCHMARK_VALUES = new Set(['text', 'voice'])
 
 const getBenchmarkFromHash = () => {
   const hash = window.location.hash.slice(1)
   const [route, queryString = ''] = hash.split('?')
-  if (route !== 'leaderboard') return null
+  // Both #leaderboard?benchmark=… and #progress?benchmark=… select the
+  // benchmark on the same view, so accept either route.
+  if (route !== 'leaderboard' && route !== 'progress') return null
 
   const value = new URLSearchParams(queryString).get('benchmark')
   return BENCHMARK_VALUES.has(value) ? value : null
@@ -14,6 +17,17 @@ const getBenchmarkFromHash = () => {
 
 const SUBMISSIONS_BASE = import.meta.env.VITE_SUBMISSIONS_BASE_URL
   || `${import.meta.env.BASE_URL}submissions`
+
+const NO_CACHE = { cache: 'no-cache' }
+
+const formatVoicePipeline = (pipeline) => {
+  if (!pipeline) return ''
+  return [
+    pipeline.asr ? `ASR: ${pipeline.asr}` : null,
+    pipeline.llm ? `LLM: ${pipeline.llm}` : null,
+    pipeline.tts ? `TTS: ${pipeline.tts}` : null,
+  ].filter(Boolean).join('\n')
+}
 
 const Leaderboard = () => {
   // Benchmark selector: 'text' (τ-bench) or 'voice' (τ-voice)
@@ -53,6 +67,7 @@ const Leaderboard = () => {
   const [showFilterInfo, setShowFilterInfo] = useState(false)
   // Expanded rows state (set of model names)
   const [expandedRows, setExpandedRows] = useState(new Set())
+  const [openPipelineKey, setOpenPipelineKey] = useState(null)
   
   // Add state for dynamically loaded data
   const [passKData, setPassKData] = useState({})
@@ -91,7 +106,7 @@ const Leaderboard = () => {
       setLoadError(null)
       
       // Load the manifest file to get list of submissions from new directory structure
-      const manifestResponse = await fetch(`${SUBMISSIONS_BASE}/manifest.json`)
+      const manifestResponse = await fetch(`${SUBMISSIONS_BASE}/manifest.json`, NO_CACHE)
       if (!manifestResponse.ok) {
         throw new Error('Failed to load submissions manifest')
       }
@@ -107,7 +122,7 @@ const Leaderboard = () => {
       // Helper to load a submission directory
       const loadSubmission = async (submissionDir, isLegacy, modality = 'text') => {
         try {
-          const response = await fetch(`${SUBMISSIONS_BASE}/${submissionDir}/submission.json`)
+          const response = await fetch(`${SUBMISSIONS_BASE}/${submissionDir}/submission.json`, NO_CACHE)
           if (!response.ok) {
             console.warn(`Failed to load ${submissionDir}: ${response.status}`)
             return
@@ -180,6 +195,7 @@ const Leaderboard = () => {
             },
             isLegacy,
             organization: submission.submitting_organization,
+            modelOrganization: submission.model_organization,
             reasoningEffort: submission.reasoning_effort || null,
             userSimulator: submission.methodology?.user_simulator || null,
             bankingRetrievalConfig: submission.results.banking_knowledge?.retrieval_config || null,
@@ -241,14 +257,19 @@ const Leaderboard = () => {
     localStorage.setItem('benchmark', benchmark)
   }, [benchmark])
 
-  // Keep benchmark in URL for shareable deep links, e.g. #leaderboard?benchmark=voice
+  // Keep benchmark in URL for shareable deep links, e.g.
+  // #leaderboard?benchmark=voice or #progress?benchmark=voice
   useEffect(() => {
-    if (!window.location.hash.startsWith('#leaderboard')) return
+    const currentHash = window.location.hash
+    if (!currentHash.startsWith('#leaderboard') && !currentHash.startsWith('#progress')) {
+      return
+    }
 
-    const hash = window.location.hash.slice(1)
+    const hash = currentHash.slice(1)
     const [route, queryString = ''] = hash.split('?')
     const params = new URLSearchParams(queryString)
     params.set('benchmark', benchmark)
+    params.delete('view')
 
     const nextHash = `${route}?${params.toString()}`
     if (hash !== nextHash) {
@@ -258,18 +279,18 @@ const Leaderboard = () => {
 
   // React to manual hash edits or browser navigation events.
   useEffect(() => {
-    const syncBenchmarkFromHash = () => {
-      const fromHash = getBenchmarkFromHash()
-      if (fromHash) {
-        setBenchmark(prev => (prev === fromHash ? prev : fromHash))
+    const syncFromHash = () => {
+      const benchmarkFromHash = getBenchmarkFromHash()
+      if (benchmarkFromHash) {
+        setBenchmark(prev => (prev === benchmarkFromHash ? prev : benchmarkFromHash))
       }
     }
 
-    window.addEventListener('hashchange', syncBenchmarkFromHash)
-    window.addEventListener('popstate', syncBenchmarkFromHash)
+    window.addEventListener('hashchange', syncFromHash)
+    window.addEventListener('popstate', syncFromHash)
     return () => {
-      window.removeEventListener('hashchange', syncBenchmarkFromHash)
-      window.removeEventListener('popstate', syncBenchmarkFromHash)
+      window.removeEventListener('hashchange', syncFromHash)
+      window.removeEventListener('popstate', syncFromHash)
     }
   }, [])
 
@@ -447,9 +468,11 @@ const Leaderboard = () => {
         </div>
       </div>
 
-      <h2 className="leaderboard-title">{isVoice ? 'τ-voice Leaderboard' : 'τ-bench Leaderboard'}</h2>
+      <div className="leaderboard-title-row">
+        <h2 className="leaderboard-title">{isVoice ? 'τ-voice Leaderboard' : 'τ-bench Leaderboard'}</h2>
+      </div>
 
-      {/* Combined Controls Row */}
+      {/* Combined Controls Row — applies to both ranking and progress views */}
       <div className="leaderboard-controls">
         {/* Domain Toggle Switch */}
         <div className="domain-toggle-switch">
@@ -551,12 +574,9 @@ const Leaderboard = () => {
               <tr>
                 <th>Rank</th>
                 <th>Model</th>
-                <th>{domain === 'banking_knowledge' ? 'Retrieval' : 'Submitting Org'}</th>
-                {isVoice ? (
-                  <th>Provider</th>
-                ) : (
-                  <th>Reasoning</th>
-                )}
+                <th>Released</th>
+                <th>{domain === 'banking_knowledge' ? 'Retrieval' : isVoice ? 'Provider' : 'Submitting Org'}</th>
+                <th>Reasoning</th>
                 <th>User Sim</th>
                 <th className="passk-header-cell">
                   <div className="passk-header-toggle">
@@ -672,7 +692,7 @@ const Leaderboard = () => {
                 if (modelStats.length === 0) {
                   return (
                     <tr className="empty-results-row">
-                      <td colSpan="7" className="empty-results-cell">
+                      <td colSpan="8" className="empty-results-cell">
                         <div className="empty-results-content">
                           <span className="empty-icon">🔧</span>
                           <span className="empty-text">
@@ -688,6 +708,8 @@ const Leaderboard = () => {
                 
                 return modelStats.map((model, index) => {
                   const isExpanded = expandedRows.has(model.key)
+                  const displayOrg = isVoice ? (model.data.voiceConfig?.provider || model.organization) : model.organization
+                  const pipelineSummary = isVoice ? formatVoicePipeline(model.data.voiceConfig?.pipeline) : ''
                   return (
                    <React.Fragment key={model.key}>
                    <tr className={`model-row ${model.data.isLegacy ? 'legacy-model' : ''} ${isExpanded ? 'expanded' : ''}`}>
@@ -709,9 +731,38 @@ const Leaderboard = () => {
                          )}
                        </div>
                      </td>
-                     
+
+                     {/* Release Date (from model_release.release_date) */}
+                     <td className="release-date-cell">
+                       {(() => {
+                         const releaseInfo = fullSubmissionData[model.key]?.model_release
+                         const releaseDate = releaseInfo?.release_date
+                         if (!releaseDate) return <span className="no-data">—</span>
+                         const label = new Date(releaseDate + 'T00:00:00Z').toLocaleDateString('en-US', {
+                           year: 'numeric',
+                           month: 'short',
+                           day: 'numeric',
+                           timeZone: 'UTC',
+                         })
+                         const inner = (
+                           <span className="release-date" title={releaseDate}>{label}</span>
+                         )
+                         return releaseInfo?.announcement_url ? (
+                           <a
+                             className="release-date-link"
+                             href={releaseInfo.announcement_url}
+                             target="_blank"
+                             rel="noopener noreferrer"
+                             title={releaseInfo.announcement_title || releaseInfo.announcement_url}
+                           >
+                             {label}
+                           </a>
+                         ) : inner
+                       })()}
+                     </td>
+
                      {/* Organization / Retrieval Config (banking) */}
-                     <td className="organization-info">
+                     <td className={`organization-info${domain === 'banking_knowledge' ? ' organization-info-retrieval' : ''}`}>
                        {domain === 'banking_knowledge' ? (
                          model.data.bankingRetrievalConfig ? (
                            <span className={`retrieval-badge retrieval-${model.data.bankingRetrievalConfig}`}>
@@ -725,60 +776,69 @@ const Leaderboard = () => {
                            <span className="no-data">—</span>
                          )
                        ) : (
-                       <div className="org-container">
-                         <div className="company-logo">
-                          {model.organization === 'Anthropic' && (
-                            <img src={`${import.meta.env.BASE_URL}claude.png`} alt="Anthropic" className="logo-img" />
-                          )}
-                          {model.organization === 'OpenAI' && (
-                            <img src={`${import.meta.env.BASE_URL}openai.svg`} alt="OpenAI" className="logo-img" />
-                          )}
-                          {model.organization === 'Sierra' && (
-                            <img src={`${import.meta.env.BASE_URL}sierra-logo.png`} alt="Sierra" className="logo-img" />
-                          )}
-                          {model.organization === 'Moonshot AI' && (
-                            <span className="emoji-logo">🚀</span>
-                          )}
-                          {model.organization === 'DeepSeek' && (
-                            <img src={`${import.meta.env.BASE_URL}DeepSeek_logo_icon.png`} alt="DeepSeek" className="logo-img" />
-                          )}
-                          {(model.organization === 'Alibaba' || model.organization === 'Qwen') && (
-                            <img src={`${import.meta.env.BASE_URL}qwen-color.png`} alt="Qwen" className="logo-img" />
-                          )}
-                         {model.organization === 'Google' && (
-                           <img src={`${import.meta.env.BASE_URL}Google__G__logo.svg.png`} alt="Google" className="logo-img" />
+                      <div className="org-container">
+                        <div className="company-logo">
+                         {displayOrg === 'Anthropic' && (
+                           <img src={`${import.meta.env.BASE_URL}claude.png`} alt="Anthropic" className="logo-img" />
                          )}
-                         {model.organization === 'NVIDIA' && (
-                           <img src={`${import.meta.env.BASE_URL}Logo-nvidia-transparent-PNG.png`} alt="NVIDIA" className="logo-img" />
+                         {displayOrg === 'OpenAI' && (
+                           <img src={`${import.meta.env.BASE_URL}openai.svg`} alt="OpenAI" className="logo-img" />
                          )}
-                        </div>
-                         <span className="org-name">{model.organization}</span>
+                         {displayOrg === 'Sierra' && (
+                           <img src={`${import.meta.env.BASE_URL}sierra-logo.png`} alt="Sierra" className="logo-img" />
+                         )}
+                         {displayOrg === 'Moonshot AI' && (
+                           <span className="emoji-logo">🚀</span>
+                         )}
+                         {displayOrg === 'DeepSeek' && (
+                           <img src={`${import.meta.env.BASE_URL}DeepSeek_logo_icon.png`} alt="DeepSeek" className="logo-img" />
+                         )}
+                         {(displayOrg === 'Alibaba' || displayOrg === 'Qwen') && (
+                           <img src={`${import.meta.env.BASE_URL}qwen-color.png`} alt="Qwen" className="logo-img" />
+                         )}
+                        {displayOrg === 'Google' && (
+                          <img src={`${import.meta.env.BASE_URL}Google__G__logo.svg.png`} alt="Google" className="logo-img" />
+                        )}
+                        {displayOrg === 'NVIDIA' && (
+                          <img src={`${import.meta.env.BASE_URL}Logo-nvidia-transparent-PNG.png`} alt="NVIDIA" className="logo-img" />
+                        )}
+                        {displayOrg === 'xAI' && (
+                          <img src={`${import.meta.env.BASE_URL}xai-logo.svg`} alt="xAI" className="logo-img" />
+                        )}
                        </div>
+                        <div className="org-text">
+                          <span className="org-name" title={pipelineSummary || displayOrg}>{displayOrg}</span>
+                          {pipelineSummary && (
+                            <span className="voice-pipeline-summary">
+                              <span>ASR + LLM + TTS</span>
+                              <button
+                                type="button"
+                                className={`voice-pipeline-info ${openPipelineKey === model.key ? 'open' : ''}`}
+                                data-tooltip={pipelineSummary}
+                                aria-label={pipelineSummary}
+                                aria-expanded={openPipelineKey === model.key}
+                                onClick={(event) => {
+                                  event.stopPropagation()
+                                  setOpenPipelineKey(openPipelineKey === model.key ? null : model.key)
+                                }}
+                              >
+                                ⓘ
+                              </button>
+                            </span>
+                          )}
+                        </div>
+                      </div>
                        )}
                      </td>
 
-                     {/* Reasoning Effort / Voice Provider */}
-                     {isVoice ? (
-                       <td className="reasoning-info">
-                         {model.data.voiceConfig?.provider ? (
-                           <span className="voice-provider-badge">
-                             {model.data.voiceConfig.provider}
-                           </span>
-                         ) : (
-                           <span className="no-data">—</span>
-                         )}
-                       </td>
-                     ) : (
-                       <td className="reasoning-info">
-                         {model.data.reasoningEffort ? (
-                           <span className={`reasoning-badge reasoning-${model.data.reasoningEffort}`}>
-                             {model.data.reasoningEffort}
-                           </span>
-                         ) : (
-                           <span className="no-data">—</span>
-                         )}
-                       </td>
-                     )}
+                     {/* Reasoning Effort */}
+                     <td className="reasoning-info">
+                       {model.data.reasoningEffort ? (
+                         <span style={{textTransform: 'lowercase'}}>{model.data.reasoningEffort}</span>
+                       ) : (
+                         <span className="no-data">—</span>
+                       )}
+                     </td>
                      
                      {/* User Simulator */}
                      <td className="user-sim-info">
@@ -827,7 +887,7 @@ const Leaderboard = () => {
                   {/* Expandable Domain Breakdown Row */}
                   {isExpanded && (
                     <tr className="domain-detail-row">
-                      <td colSpan="7" className="domain-detail-cell">
+                      <td colSpan="8" className="domain-detail-cell">
                         <div className="domain-breakdown">
                           {(isVoice
                             ? [
@@ -920,6 +980,20 @@ const Leaderboard = () => {
         </div>
         )}
 
+      {/* Progress Over Time (always below the ranking table) */}
+      <div id="progress" style={{ scrollMarginTop: '80px' }}>
+      <ProgressView
+        passKData={passKData}
+        fullSubmissionData={fullSubmissionData}
+        benchmark={benchmark}
+        domain={domain}
+        showStandard={showStandard}
+        showCustom={showCustom}
+        showLegacy={showLegacy}
+        baseUrl={import.meta.env.BASE_URL}
+      />
+      </div>
+
       {/* Submissions Notice */}
       <div className="submissions-notice">
         <div className="submissions-content">
@@ -968,6 +1042,31 @@ const Leaderboard = () => {
                   <tr><td>Type</td><td>{selectedSubmission.submission_type || 'standard'}</td></tr>
                   <tr><td>Modality</td><td>{selectedSubmission.modality || 'text'}</td></tr>
 
+                  {/* Model Release */}
+                  {selectedSubmission.model_release && (
+                    <>
+                      <tr className="sd-section-header"><td colSpan="2">MODEL RELEASE</td></tr>
+                      {selectedSubmission.model_release.release_date && (
+                        <tr><td>Release Date</td><td>{selectedSubmission.model_release.release_date}</td></tr>
+                      )}
+                      {selectedSubmission.model_release.announcement_url && (
+                        <tr>
+                          <td>Announcement</td>
+                          <td>
+                            <a
+                              href={selectedSubmission.model_release.announcement_url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="sd-link"
+                            >
+                              {selectedSubmission.model_release.announcement_title || selectedSubmission.model_release.announcement_url}
+                            </a>
+                          </td>
+                        </tr>
+                      )}
+                    </>
+                  )}
+
                   {/* Contact */}
                   <tr className="sd-section-header"><td colSpan="2">CONTACT</td></tr>
                   {selectedSubmission.contact_info?.name && (
@@ -984,6 +1083,20 @@ const Leaderboard = () => {
                       <tr className="sd-section-header"><td colSpan="2">VOICE CONFIGURATION</td></tr>
                       <tr><td>Provider</td><td>{selectedSubmission.voice_config.provider}</td></tr>
                       <tr><td>Model</td><td>{selectedSubmission.voice_config.model}</td></tr>
+                      {selectedSubmission.voice_config.pipeline && (
+                        <>
+                          <tr className="sd-section-header"><td colSpan="2">CASCADE COMPONENTS</td></tr>
+                          {selectedSubmission.voice_config.pipeline.asr && (
+                            <tr><td>ASR</td><td>{selectedSubmission.voice_config.pipeline.asr}</td></tr>
+                          )}
+                          {selectedSubmission.voice_config.pipeline.llm && (
+                            <tr><td>LLM</td><td>{selectedSubmission.voice_config.pipeline.llm}</td></tr>
+                          )}
+                          {selectedSubmission.voice_config.pipeline.tts && (
+                            <tr><td>TTS</td><td>{selectedSubmission.voice_config.pipeline.tts}</td></tr>
+                          )}
+                        </>
+                      )}
                       {selectedSubmission.voice_config.tick_duration_seconds != null && (
                         <tr><td>Tick Duration</td><td>{selectedSubmission.voice_config.tick_duration_seconds}s</td></tr>
                       )}
