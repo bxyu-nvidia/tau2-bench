@@ -1035,7 +1035,9 @@ class KnowledgeTools(ToolKitBase):
         try:
             disputed_amount = float(disputed_amount)
         except (ValueError, TypeError):
-            return f"Error: Invalid disputed_amount '{disputed_amount}'. Must be a number."
+            return (
+                f"Error: Invalid disputed_amount '{disputed_amount}'. Must be a number."
+            )
 
         if disputed_amount <= 0:
             return "Error: disputed_amount must be a positive number."
@@ -2000,10 +2002,16 @@ For deposits without available images, the dispute will proceed based on custome
         ):
             return "Error: Missing required parameters."
 
+        # Normalize to int (the documented type) so the stored record and the
+        # response render identically whether the caller sent 2500 or 2500.0.
+        # Fractional values are rejected rather than truncated.
         try:
-            requested_increase_amount = int(requested_increase_amount)
-        except (ValueError, TypeError):
-            return f"Error: Invalid requested_increase_amount '{requested_increase_amount}'. Must be an integer."
+            requested_increase_amount = float(requested_increase_amount)
+        except (TypeError, ValueError):
+            return "Error: Invalid requested_increase_amount. Must be a whole number."
+        if not requested_increase_amount.is_integer():
+            return "Error: Invalid requested_increase_amount. Must be a whole number of dollars."
+        requested_increase_amount = int(requested_increase_amount)
 
         if requested_increase_amount <= 0:
             return "Error: Requested increase amount must be positive."
@@ -2240,7 +2248,10 @@ For deposits without available images, the dispute will proceed based on custome
             current_limit = 0.0
 
         # Update the credit limit
-        new_limit = float(new_credit_limit)
+        try:
+            new_limit = float(new_credit_limit)
+        except (ValueError, TypeError):
+            return f"Error: Invalid new_credit_limit '{new_credit_limit}'. Must be a number."
         self.db.credit_card_accounts.data[credit_card_account_id]["credit_limit"] = (
             f"${new_limit:.2f}"
         )
@@ -2728,8 +2739,8 @@ For deposits without available images, the dispute will proceed based on custome
 
         try:
             amount = float(amount)
-        except (ValueError, TypeError):
-            return f"Error: Invalid amount '{amount}'. Must be a number."
+        except (TypeError, ValueError):
+            return "Error: Invalid credit amount. Must be a number."
 
         if amount <= 0:
             return "Error: Credit amount must be positive."
@@ -2812,8 +2823,8 @@ For deposits without available images, the dispute will proceed based on custome
 
         try:
             amount = float(amount)
-        except (ValueError, TypeError):
-            return f"Error: Invalid amount '{amount}'. Must be a number."
+        except (TypeError, ValueError):
+            return "Error: Invalid credit amount. Must be a number."
 
         if amount <= 0:
             return "Error: Credit amount must be positive."
@@ -3965,9 +3976,12 @@ For deposits without available images, the dispute will proceed based on custome
             return "Error: Missing required parameter: new_limit."
 
         try:
-            new_limit = int(new_limit)
+            new_limit = float(new_limit)
         except (ValueError, TypeError):
             return f"Error: new_limit must be an integer, got '{new_limit}'."
+        if not new_limit.is_integer():
+            return f"Error: new_limit must be an integer, got '{new_limit}'."
+        new_limit = int(new_limit)
 
         if new_limit <= 0:
             return "Error: new_limit must be a positive amount."
@@ -4369,6 +4383,13 @@ class KnowledgeUserTools(ToolKitBase):
                 f"Must be one of: {self.VALID_CREDIT_CARD_TYPES}"
             )
 
+        # Normalize to float so the deterministic application ID and stored record
+        # do not depend on whether the caller sent 100000 or 100000.0
+        try:
+            annual_income = float(annual_income)
+        except (TypeError, ValueError):
+            return "Error: Invalid annual_income. Must be a number."
+
         # Generate a deterministic application ID from the input parameters
         # This ensures the same inputs produce the same ID for environment evaluation
         application_id = generate_application_id(
@@ -4645,6 +4666,11 @@ class KnowledgeUserTools(ToolKitBase):
         if credit_card_type not in self.CREDIT_CARD_REWARDS:
             available_cards = list(self.CREDIT_CARD_REWARDS.keys())
             return f"Error: Unknown credit card type '{credit_card_type}'. Available types: {available_cards}"
+
+        try:
+            amount = float(amount)
+        except (ValueError, TypeError):
+            return f"Error: Invalid amount '{amount}'. Must be a number."
 
         # Generate a deterministic transaction ID
         transaction_id = generate_transaction_id(
