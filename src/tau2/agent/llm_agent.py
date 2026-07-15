@@ -140,12 +140,6 @@ class LLMAgent(
         else:
             state.messages.append(message)
         messages = state.system_messages + state.messages
-        # Reasoning models intermittently return an empty message (no content, no
-        # tool calls), which fails validate() and hard-fails the rollout. Retry a
-        # few times so a transient empty turn doesn't kill an otherwise healthy
-        # trajectory, then return the empty message for the orchestrator to
-        # terminate cleanly (mirrors the user simulator's EMPTY_USER_MESSAGE retry).
-        # Grep "EMPTY_AGENT_MESSAGE" for these events.
         max_attempts = DEFAULT_MAX_AGENT_RETRIES
         for attempt in range(1, max_attempts + 1):
             assistant_message = await generate(
@@ -157,10 +151,13 @@ class LLMAgent(
             )
             if assistant_message.has_content() or assistant_message.is_tool_call():
                 return assistant_message
+            finish_reason = _finish_reason(assistant_message)
+            if finish_reason == "length":
+                return assistant_message
             event = "retry" if attempt < max_attempts else "hard_fail"
             print(
                 f"EMPTY_AGENT_MESSAGE event={event} attempt={attempt}/{max_attempts} "
-                f"finish_reason={_finish_reason(assistant_message)}",
+                f"finish_reason={finish_reason}",
                 file=sys.stderr,
                 flush=True,
             )
