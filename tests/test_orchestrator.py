@@ -1059,6 +1059,49 @@ def test_agent_steps_budget_terminates_before_next_agent_call(
     assert orchestrator.agent.received_messages == []
 
 
+def test_agent_messages_exclude_terminal_user_message_at_agent_step_limit(
+    domain_name: str,
+    get_environment: Callable[[], Environment],
+    base_task: Task,
+):
+    orchestrator = _make_orchestrator_for_turn_notice_test(
+        domain_name=domain_name,
+        get_environment=get_environment,
+        base_task=base_task,
+        max_agent_steps=1,
+    )
+    first_user_message = UserMessage(role="user", content="first user turn")
+    final_assistant_message = AssistantMessage(
+        role="assistant", content="final assistant turn"
+    )
+    terminal_user_message = UserMessage(role="user", content="terminal user turn")
+    orchestrator.trajectory = [
+        deepcopy(DEFAULT_FIRST_AGENT_MESSAGE),
+        first_user_message,
+        final_assistant_message,
+        terminal_user_message,
+    ]
+    orchestrator.from_role = Role.USER
+    orchestrator.to_role = Role.AGENT
+    orchestrator.message = terminal_user_message
+    orchestrator.agent_steps_count = 1
+    orchestrator.agent_state = {}
+
+    asyncio.run(orchestrator.step())
+
+    assert orchestrator.termination_reason == TerminationReason.MAX_AGENT_STEPS
+    canonical_contents = [
+        message.content or "" for message in orchestrator.get_messages()
+    ]
+    agent_contents = [
+        message.content or "" for message in orchestrator.get_agent_messages()
+    ]
+    assert "terminal user turn" in canonical_contents
+    assert all("terminal user turn" not in content for content in agent_contents)
+    assert any("You have 1 turns left" in content for content in agent_contents)
+    assert all("You have 0 turns left" not in content for content in agent_contents)
+
+
 def test_exhausted_agent_steps_still_allows_user_routing(
     domain_name: str,
     get_environment: Callable[[], Environment],
@@ -1124,6 +1167,183 @@ def test_final_agent_tool_call_executes_then_stops(
     assert orchestrator.termination_reason == TerminationReason.MAX_AGENT_STEPS
     assert isinstance(orchestrator.trajectory[-1], ToolMessage)
     assert orchestrator.trajectory[-1].content == "env output"
+
+
+def test_agent_messages_exclude_terminal_tool_result_at_agent_step_limit(
+    domain_name: str,
+    get_environment: Callable[[], Environment],
+    base_task: Task,
+):
+    first_user_message = UserMessage(role="user", content="first user turn")
+    final_tool_call = AssistantMessage(
+        role="assistant",
+        tool_calls=[
+            ToolCall(id="call_1", name="search", arguments={}),
+            ToolCall(id="call_2", name="search", arguments={}),
+        ],
+    )
+    orchestrator = _make_orchestrator_for_turn_notice_test(
+        domain_name=domain_name,
+        get_environment=get_environment,
+        base_task=base_task,
+        max_agent_steps=1,
+    )
+    orchestrator.trajectory = [
+        deepcopy(DEFAULT_FIRST_AGENT_MESSAGE),
+        first_user_message,
+        final_tool_call,
+    ]
+    orchestrator.from_role = Role.AGENT
+    orchestrator.to_role = Role.ENV
+    orchestrator.message = final_tool_call
+    orchestrator.agent_steps_count = 1
+    orchestrator._execute_tool_calls = lambda _tool_calls: [
+        ToolMessage(
+            id="call_1",
+            role="tool",
+            content="first terminal tool result",
+            requestor="assistant",
+        ),
+        ToolMessage(
+            id="call_2",
+            role="tool",
+            content="second terminal tool result",
+            requestor="assistant",
+        ),
+    ]
+
+    asyncio.run(orchestrator.step())
+
+    assert orchestrator.termination_reason == TerminationReason.MAX_AGENT_STEPS
+    canonical_contents = [
+        message.content or "" for message in orchestrator.get_messages()
+    ]
+    agent_contents = [
+        message.content or "" for message in orchestrator.get_agent_messages()
+    ]
+    assert "first terminal tool result" in canonical_contents
+    assert "second terminal tool result" in canonical_contents
+    assert all(
+        "first terminal tool result" not in content for content in agent_contents
+    )
+    assert all(
+        "second terminal tool result" not in content for content in agent_contents
+    )
+    assert any("You have 1 turns left" in content for content in agent_contents)
+    assert all("You have 0 turns left" not in content for content in agent_contents)
+
+
+def test_agent_messages_exclude_unlimited_terminal_user_stop(
+    domain_name: str,
+    get_environment: Callable[[], Environment],
+    base_task: Task,
+):
+    orchestrator = _make_orchestrator_for_turn_notice_test(
+        domain_name=domain_name,
+        get_environment=get_environment,
+        base_task=base_task,
+        max_agent_steps=None,
+    )
+    first_user_message = UserMessage(role="user", content="first user turn")
+    final_assistant_message = AssistantMessage(
+        role="assistant", content="final assistant turn"
+    )
+    terminal_user_message = UserMessage(role="user", content="terminal user stop")
+    orchestrator.trajectory = [
+        deepcopy(DEFAULT_FIRST_AGENT_MESSAGE),
+        first_user_message,
+        final_assistant_message,
+        terminal_user_message,
+    ]
+    orchestrator.from_role = Role.USER
+    orchestrator.to_role = Role.AGENT
+    orchestrator.message = terminal_user_message
+    orchestrator.termination_reason = TerminationReason.USER_STOP
+    orchestrator.done = True
+
+    canonical_contents = [
+        message.content or "" for message in orchestrator.get_messages()
+    ]
+    agent_contents = [
+        message.content or "" for message in orchestrator.get_agent_messages()
+    ]
+    assert "terminal user stop" in canonical_contents
+    assert all("terminal user stop" not in content for content in agent_contents)
+    assert "first user turn" in agent_contents
+    assert "final assistant turn" in agent_contents
+    assert all("ENVIRONMENT REMINDER" not in content for content in agent_contents)
+
+
+def test_agent_messages_exclude_terminal_malformed_user_message(
+    domain_name: str,
+    get_environment: Callable[[], Environment],
+    base_task: Task,
+):
+    orchestrator = _make_orchestrator_for_turn_notice_test(
+        domain_name=domain_name,
+        get_environment=get_environment,
+        base_task=base_task,
+        max_agent_steps=2,
+    )
+    malformed_user_message = UserMessage(role="user", content="")
+
+    async def generate_malformed_user_message(message, state):
+        return malformed_user_message, state
+
+    orchestrator.user.generate_next_message = generate_malformed_user_message
+    final_assistant_message = AssistantMessage(
+        role="assistant", content="final assistant turn"
+    )
+    orchestrator.trajectory = [
+        deepcopy(DEFAULT_FIRST_AGENT_MESSAGE),
+        UserMessage(role="user", content="first user turn"),
+        final_assistant_message,
+    ]
+    orchestrator.from_role = Role.AGENT
+    orchestrator.to_role = Role.USER
+    orchestrator.message = final_assistant_message
+    orchestrator.user_state = {}
+
+    asyncio.run(orchestrator.step())
+
+    assert orchestrator.termination_reason == TerminationReason.EMPTY_USER_MESSAGE
+    assert orchestrator.to_role == Role.USER
+    assert malformed_user_message in orchestrator.get_messages()
+    assert malformed_user_message not in orchestrator.get_agent_messages()
+    agent_contents = [
+        message.content or "" for message in orchestrator.get_agent_messages()
+    ]
+    assert "final assistant turn" in agent_contents
+    assert all("You have 1 turns left" not in content for content in agent_contents)
+
+
+def test_agent_messages_preserve_resumed_history_past_current_step_limit(
+    domain_name: str,
+    get_environment: Callable[[], Environment],
+    base_task: Task,
+):
+    orchestrator = _make_orchestrator_for_turn_notice_test(
+        domain_name=domain_name,
+        get_environment=get_environment,
+        base_task=base_task,
+        max_agent_steps=1,
+    )
+    orchestrator.trajectory = [
+        deepcopy(DEFAULT_FIRST_AGENT_MESSAGE),
+        UserMessage(role="user", content="first user turn"),
+        AssistantMessage(role="assistant", content="first assistant turn"),
+        UserMessage(role="user", content="resumed user turn"),
+        AssistantMessage(role="assistant", content="resumed assistant turn"),
+    ]
+
+    agent_contents = [
+        message.content or "" for message in orchestrator.get_agent_messages()
+    ]
+
+    assert any(content.startswith("first user turn") for content in agent_contents)
+    assert "first assistant turn" in agent_contents
+    assert any(content.startswith("resumed user turn") for content in agent_contents)
+    assert "resumed assistant turn" in agent_contents
 
 
 def test_finalize_records_step_metrics(

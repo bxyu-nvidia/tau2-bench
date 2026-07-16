@@ -1140,8 +1140,9 @@ class Orchestrator(BaseOrchestrator[AgentT, UserT, Message]):
 
         This view is derived from the canonical trajectory and includes the
         environment reminders that are injected into messages sent to the agent.
-        It intentionally excludes user-only tool calls/results so it can be used
-        for agent replay/debugging without leaking reminders into user history.
+        It intentionally excludes user-only tool calls/results and any terminal
+        input that was never forwarded to the agent, so it can be used for agent
+        replay/debugging without leaking reminders into user history.
         """
         if messages is None:
             source_messages = self.get_trajectory()
@@ -1155,8 +1156,20 @@ class Orchestrator(BaseOrchestrator[AgentT, UserT, Message]):
         agent_steps_seen = 0
         user_visible_turn_idx = 0
         seen_agent_message = False
+        last_assistant_idx = max(
+            (
+                idx
+                for idx, msg in enumerate(source_messages)
+                if isinstance(msg, AssistantMessage)
+            ),
+            default=-1,
+        )
+        has_pending_agent_input = self.done and (
+            self.to_role == Role.AGENT
+            or self.termination_reason == TerminationReason.EMPTY_USER_MESSAGE
+        )
 
-        for msg in source_messages:
+        for msg_idx, msg in enumerate(source_messages):
             if isinstance(msg, AssistantMessage):
                 agent_msg = deepcopy(msg)
                 agent_messages.append(agent_msg)
@@ -1165,6 +1178,10 @@ class Orchestrator(BaseOrchestrator[AgentT, UserT, Message]):
                     continue
                 seen_agent_message = True
                 agent_steps_seen += 1
+            elif has_pending_agent_input and msg_idx > last_assistant_idx:
+                # A trailing user or tool message without a subsequent agent
+                # output was never forwarded to the agent.
+                continue
             elif isinstance(msg, UserMessage):
                 if msg.is_tool_call():
                     continue
