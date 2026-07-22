@@ -655,9 +655,8 @@ class KnowledgeTools(ToolKitBase):
                 f"You must first use `unlock_discoverable_agent_tool` to unlock this tool before calling it."
             )
 
-        # Parse arguments
         try:
-            args_dict = json.loads(arguments)
+            args_dict = json.loads(arguments, parse_int=float)
         except json.JSONDecodeError as e:
             return f"Error: Invalid JSON in arguments: {e}"
 
@@ -854,6 +853,12 @@ class KnowledgeTools(ToolKitBase):
         if resolution_requested == "partial_refund":
             if partial_refund_amount is None:
                 return "Error: partial_refund_amount is required when resolution_requested is 'partial_refund'."
+
+        if partial_refund_amount is not None:
+            try:
+                partial_refund_amount = float(partial_refund_amount)
+            except (ValueError, TypeError):
+                return f"Error: Invalid partial_refund_amount '{partial_refund_amount}'. Must be a number."
 
         # Generate a deterministic dispute ID
         dispute_id = generate_dispute_id(user_id, transaction_id)
@@ -4497,9 +4502,8 @@ class KnowledgeUserTools(ToolKitBase):
         if not self.has_discoverable_tool(discoverable_tool_name):
             return f"Error: Unknown discoverable tool '{discoverable_tool_name}'."
 
-        # Parse arguments
         try:
-            args_dict = json.loads(arguments)
+            args_dict = json.loads(arguments, parse_int=float)
         except json.JSONDecodeError as e:
             return f"Error: Invalid JSON in arguments: {e}"
 
