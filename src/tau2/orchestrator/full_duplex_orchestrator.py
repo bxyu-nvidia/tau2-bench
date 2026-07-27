@@ -603,6 +603,7 @@ class FullDuplexOrchestrator(BaseOrchestrator[StreamingAgentT, StreamingUserT, T
             start_time=self._run_start_time,
             end_time=get_now(),
             duration=duration,
+            num_steps=self.step_count,
             termination_reason=self.termination_reason.value,
             reward_info=None,
             user_cost=user_cost,

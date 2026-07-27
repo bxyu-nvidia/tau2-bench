@@ -132,6 +132,18 @@ def add_run_args(parser):
         help=f"The maximum number of steps to run the simulation. Default is {DEFAULT_MAX_STEPS}.",
     )
     parser.add_argument(
+        "--max-agent-steps",
+        type=int,
+        default=None,
+        help="Maximum number of generated agent steps before terminating. Agent text responses and tool-call messages each count as one step. Disabled by default.",
+    )
+    parser.add_argument(
+        "--turns-remaining-interval",
+        type=int,
+        default=1,
+        help="Append the agent-steps remaining notice to every Nth user message. Default is 1.",
+    )
+    parser.add_argument(
         "--max-errors",
         type=int,
         default=DEFAULT_MAX_ERRORS,
@@ -669,6 +681,8 @@ def main():
                 llm_args_agent=args.agent_llm_args,
                 user=args.user,
                 max_steps=args.max_steps,
+                max_agent_steps=args.max_agent_steps,
+                turns_remaining_interval=args.turns_remaining_interval,
                 enforce_communication_protocol=args.enforce_communication_protocol,
             )
 
