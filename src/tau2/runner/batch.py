@@ -134,6 +134,7 @@ def run_auto_review(
     simulation: SimulationRun,
     task: Task,
     review_mode: str,
+    review_model: str,
     user: str,
     llm_user: Optional[str],
     llm_args_user: Optional[dict],
@@ -148,6 +149,7 @@ def run_auto_review(
         simulation: The completed simulation to review.
         task: The task specification.
         review_mode: "full" (agent+user) or "user" (user only).
+        review_model: LLM model to use for review and auth classification.
         user: User implementation name.
         llm_user: LLM used by user simulator.
         llm_args_user: LLM args for user simulator.
@@ -183,6 +185,7 @@ def run_auto_review(
         user_info=review_user_info,
         policy=policy,
         interruption_enabled=is_audio_native,
+        review_model=review_model,
     )
 
     if review_mode == "full":
@@ -351,6 +354,7 @@ async def run_single_task(
     audio_taps: bool = False,
     auto_review: bool = False,
     review_mode: str = "full",
+    review_model: Optional[str] = None,
     hallucination_feedback: Optional[str] = None,
 ) -> SimulationRun:
     """Run a single task simulation with logging and optional side effects.
@@ -374,6 +378,7 @@ async def run_single_task(
         audio_debug: Enable audio debug analysis.
         auto_review: Run LLM conversation review after simulation.
         review_mode: Review mode ("full" or "user").
+        review_model: LLM model to use for review and auth classification.
 
     Returns:
         The completed SimulationRun with reward_info attached.
@@ -423,6 +428,7 @@ async def run_single_task(
                 simulation=simulation,
                 task=task,
                 review_mode=review_mode,
+                review_model=review_model or config.review_model,
                 user=config.effective_user,
                 llm_user=config.llm_user,
                 llm_args_user=config.llm_args_user,
@@ -666,6 +672,7 @@ def run_tasks(
                 audio_taps=config.audio_taps if is_voice else False,
                 auto_review=config.auto_review,
                 review_mode=config.review_mode,
+                review_model=config.review_model,
                 hallucination_feedback=hallucination_feedback,
             )
 

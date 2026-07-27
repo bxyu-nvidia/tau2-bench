@@ -152,6 +152,8 @@ const TrajectoryVisualizer = () => {
                 model_name: sub.model_name,
                 model_organization: sub.model_organization || '',
                 reasoning_effort: sub.reasoning_effort || null,
+                submission_type: sub.submission_type || 'standard',
+                user_simulator: sub.methodology?.user_simulator || null,
                 trajectory_files: sub.trajectory_files,
                 availableDomains: Object.keys(sub.trajectory_files),
                 modality,
@@ -576,7 +578,7 @@ const TrajectoryVisualizer = () => {
                   <optgroup label="τ-voice (Voice)">
                     {submissions.filter(s => s.modality === 'voice').map(s => (
                       <option key={s.dir} value={s.dir}>
-                        {s.model_name} ({s.model_organization})
+                        {s.model_name} ({s.model_organization}){s.submission_type === 'custom' ? ` [Custom]${s.user_simulator ? ` — user sim: ${s.user_simulator}` : ''}` : ''}
                       </option>
                     ))}
                   </optgroup>
