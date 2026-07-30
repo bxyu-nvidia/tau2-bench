@@ -655,8 +655,9 @@ class KnowledgeTools(ToolKitBase):
                 f"You must first use `unlock_discoverable_agent_tool` to unlock this tool before calling it."
             )
 
+        # Parse arguments
         try:
-            args_dict = json.loads(arguments, parse_int=float)
+            args_dict = json.loads(arguments)
         except json.JSONDecodeError as e:
             return f"Error: Invalid JSON in arguments: {e}"
 
@@ -854,12 +855,6 @@ class KnowledgeTools(ToolKitBase):
             if partial_refund_amount is None:
                 return "Error: partial_refund_amount is required when resolution_requested is 'partial_refund'."
 
-        if partial_refund_amount is not None:
-            try:
-                partial_refund_amount = float(partial_refund_amount)
-            except (ValueError, TypeError):
-                return f"Error: Invalid partial_refund_amount '{partial_refund_amount}'. Must be a number."
-
         # Generate a deterministic dispute ID
         dispute_id = generate_dispute_id(user_id, transaction_id)
 
@@ -1037,13 +1032,6 @@ class KnowledgeTools(ToolKitBase):
             return f"Error: Invalid card_action. Must be one of: {valid_card_actions}"
 
         # Validate disputed_amount is positive
-        try:
-            disputed_amount = float(disputed_amount)
-        except (ValueError, TypeError):
-            return (
-                f"Error: Invalid disputed_amount '{disputed_amount}'. Must be a number."
-            )
-
         if disputed_amount <= 0:
             return "Error: disputed_amount must be a positive number."
 
@@ -1673,11 +1661,6 @@ For deposits without available images, the dispute will proceed based on custome
         if not user_id or not credit_card_account_id or amount is None or not reason:
             return "Error: Missing required parameters (user_id, credit_card_account_id, amount, reason)."
 
-        try:
-            amount = float(amount)
-        except (ValueError, TypeError):
-            return f"Error: Invalid amount '{amount}'. Must be a number."
-
         if amount <= 0:
             return "Error: Credit amount must be positive."
 
@@ -2007,17 +1990,6 @@ For deposits without available images, the dispute will proceed based on custome
         ):
             return "Error: Missing required parameters."
 
-        # Normalize to int (the documented type) so the stored record and the
-        # response render identically whether the caller sent 2500 or 2500.0.
-        # Fractional values are rejected rather than truncated.
-        try:
-            requested_increase_amount = float(requested_increase_amount)
-        except (TypeError, ValueError):
-            return "Error: Invalid requested_increase_amount. Must be a whole number."
-        if not requested_increase_amount.is_integer():
-            return "Error: Invalid requested_increase_amount. Must be a whole number of dollars."
-        requested_increase_amount = int(requested_increase_amount)
-
         if requested_increase_amount <= 0:
             return "Error: Requested increase amount must be positive."
 
@@ -2253,10 +2225,7 @@ For deposits without available images, the dispute will proceed based on custome
             current_limit = 0.0
 
         # Update the credit limit
-        try:
-            new_limit = float(new_credit_limit)
-        except (ValueError, TypeError):
-            return f"Error: Invalid new_credit_limit '{new_credit_limit}'. Must be a number."
+        new_limit = float(new_credit_limit)
         self.db.credit_card_accounts.data[credit_card_account_id]["credit_limit"] = (
             f"${new_limit:.2f}"
         )
@@ -2742,11 +2711,6 @@ For deposits without available images, the dispute will proceed based on custome
         if not account_id or amount is None or not credit_type:
             return "Error: Missing required parameters."
 
-        try:
-            amount = float(amount)
-        except (TypeError, ValueError):
-            return "Error: Invalid credit amount. Must be a number."
-
         if amount <= 0:
             return "Error: Credit amount must be positive."
 
@@ -2825,11 +2789,6 @@ For deposits without available images, the dispute will proceed based on custome
         """
         if not account_id or amount is None or not credit_type:
             return "Error: Missing required parameters."
-
-        try:
-            amount = float(amount)
-        except (TypeError, ValueError):
-            return "Error: Invalid credit amount. Must be a number."
 
         if amount <= 0:
             return "Error: Credit amount must be positive."
@@ -3981,12 +3940,9 @@ For deposits without available images, the dispute will proceed based on custome
             return "Error: Missing required parameter: new_limit."
 
         try:
-            new_limit = float(new_limit)
+            new_limit = int(new_limit)
         except (ValueError, TypeError):
             return f"Error: new_limit must be an integer, got '{new_limit}'."
-        if not new_limit.is_integer():
-            return f"Error: new_limit must be an integer, got '{new_limit}'."
-        new_limit = int(new_limit)
 
         if new_limit <= 0:
             return "Error: new_limit must be a positive amount."
@@ -4388,13 +4344,6 @@ class KnowledgeUserTools(ToolKitBase):
                 f"Must be one of: {self.VALID_CREDIT_CARD_TYPES}"
             )
 
-        # Normalize to float so the deterministic application ID and stored record
-        # do not depend on whether the caller sent 100000 or 100000.0
-        try:
-            annual_income = float(annual_income)
-        except (TypeError, ValueError):
-            return "Error: Invalid annual_income. Must be a number."
-
         # Generate a deterministic application ID from the input parameters
         # This ensures the same inputs produce the same ID for environment evaluation
         application_id = generate_application_id(
@@ -4502,8 +4451,9 @@ class KnowledgeUserTools(ToolKitBase):
         if not self.has_discoverable_tool(discoverable_tool_name):
             return f"Error: Unknown discoverable tool '{discoverable_tool_name}'."
 
+        # Parse arguments
         try:
-            args_dict = json.loads(arguments, parse_int=float)
+            args_dict = json.loads(arguments)
         except json.JSONDecodeError as e:
             return f"Error: Invalid JSON in arguments: {e}"
 
@@ -4670,11 +4620,6 @@ class KnowledgeUserTools(ToolKitBase):
         if credit_card_type not in self.CREDIT_CARD_REWARDS:
             available_cards = list(self.CREDIT_CARD_REWARDS.keys())
             return f"Error: Unknown credit card type '{credit_card_type}'. Available types: {available_cards}"
-
-        try:
-            amount = float(amount)
-        except (ValueError, TypeError):
-            return f"Error: Invalid amount '{amount}'. Must be a number."
 
         # Generate a deterministic transaction ID
         transaction_id = generate_transaction_id(
