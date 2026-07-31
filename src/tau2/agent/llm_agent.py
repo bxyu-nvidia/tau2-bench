@@ -1,3 +1,4 @@
+import sys
 from typing import Generic, List, Optional, TypeVar
 
 from loguru import logger
@@ -20,6 +21,20 @@ from tau2.data_model.message import (
 from tau2.data_model.tasks import Action, Task
 from tau2.environment.tool import Tool, as_tool
 from tau2.utils.llm_utils import generate
+
+# Number of times to retry the agent when it returns an empty message (no content
+# and no tool calls) before letting the orchestrator hard-fail the trajectory.
+# Mirrors the user simulator's empty-message retry.
+DEFAULT_MAX_AGENT_RETRIES = 5
+
+
+def _finish_reason(message: AssistantMessage) -> Optional[str]:
+    """Best-effort extraction of the chat-completion finish_reason, or None."""
+    try:
+        return message.raw_data["choices"][0]["finish_reason"]
+    except (TypeError, KeyError, IndexError):
+        return None
+
 
 AGENT_INSTRUCTION = """
 You are a customer service agent that helps the user according to the <policy> provided below.
@@ -125,13 +140,29 @@ class LLMAgent(
         else:
             state.messages.append(message)
         messages = state.system_messages + state.messages
-        assistant_message = await generate(
-            model=self.llm,
-            tools=self.tools,
-            messages=messages,
-            call_name="agent_response",
-            **self.llm_args,
-        )
+        max_attempts = DEFAULT_MAX_AGENT_RETRIES
+        for attempt in range(1, max_attempts + 1):
+            assistant_message = await generate(
+                model=self.llm,
+                tools=self.tools,
+                messages=messages,
+                call_name="agent_response",
+                **self.llm_args,
+            )
+            if assistant_message.has_content() or assistant_message.is_tool_call():
+                return assistant_message
+            finish_reason = _finish_reason(assistant_message)
+            if finish_reason == "length":
+                return assistant_message
+            event = "retry" if attempt < max_attempts else "hard_fail"
+            print(
+                f"EMPTY_AGENT_MESSAGE event={event} attempt={attempt}/{max_attempts} "
+                f"finish_reason={finish_reason}",
+                file=sys.stderr,
+                flush=True,
+            )
+        # Return the last (empty) message; the orchestrator terminates with
+        # TerminationReason.EMPTY_TOOL_CALLS_AND_CONTENT.
         return assistant_message
 
 
