@@ -25,6 +25,7 @@ from tau2.config import (
     DEFAULT_LLM_AGENT,
     DEFAULT_LLM_ARGS_AGENT,
     DEFAULT_LLM_ARGS_USER,
+    DEFAULT_LLM_EVAL_USER_SIMULATOR,
     DEFAULT_LLM_USER,
     DEFAULT_LOG_LEVEL,
     DEFAULT_MAX_CONCURRENCY,
@@ -417,6 +418,13 @@ class BaseRunConfig(BaseModel):
         Field(
             description="Review mode when auto_review is enabled: 'full' (agent+user errors, default) or 'user' (user simulator only).",
             default="full",
+        ),
+    ]
+    review_model: Annotated[
+        str,
+        Field(
+            description="LLM model to use for review calls when auto_review is enabled.",
+            default=DEFAULT_LLM_EVAL_USER_SIMULATOR,
         ),
     ]
     hallucination_retries: Annotated[

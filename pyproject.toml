@@ -7,7 +7,7 @@ allow-direct-references = true
 
 [project]
 name = "tau2"
-version = "1.0.0"
+version = "1.0.1"
 description = "tau-bench: Benchmarking tool-agent-user interaction in real-world domains"
 readme = "README.md"
 requires-python = ">=3.12,<3.14"
