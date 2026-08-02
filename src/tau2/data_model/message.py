@@ -216,6 +216,16 @@ class ParticipantMessageBase(BaseModel):
     cost: Optional[float] = None
     usage: Optional[dict] = None
     raw_data: Optional[dict] = None
+    reasoning_content: Optional[str] = Field(
+        description=(
+            "Reasoning trace produced by the model (e.g. content inside <think>...</think> "
+            "for DeepSeek-style models). Preserved on assistant messages so it can be "
+            "replayed back to the model in subsequent turns — required for DeepSeek-V3.2 / "
+            "V4 multi-turn tool-calling to behave correctly per their HF model cards "
+            "(model loses tool-arg fidelity if past reasoning is stripped)."
+        ),
+        default=None,
+    )
     generation_time_seconds: Optional[float] = Field(
         description="Wall clock time (seconds) for LLM generation of this message.",
         default=None,
