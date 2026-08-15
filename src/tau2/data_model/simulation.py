@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Literal, Optional, Union
 
 import pandas as pd
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from typing_extensions import Annotated
 
 if TYPE_CHECKING:
@@ -25,6 +25,7 @@ from tau2.config import (
     DEFAULT_LLM_AGENT,
     DEFAULT_LLM_ARGS_AGENT,
     DEFAULT_LLM_ARGS_USER,
+    DEFAULT_LLM_EVAL_USER_SIMULATOR,
     DEFAULT_LLM_USER,
     DEFAULT_LOG_LEVEL,
     DEFAULT_MAX_CONCURRENCY,
@@ -83,6 +84,10 @@ class AudioNativeConfig(BaseModel):
     model: str = Field(
         default=DEFAULT_AUDIO_NATIVE_MODELS[DEFAULT_AUDIO_NATIVE_PROVIDER],
         description="Audio native model to use",
+    )
+    reasoning_effort: Optional[str] = Field(
+        default=None,
+        description="Reasoning effort for thinking models: 'minimal', 'low', 'medium', 'high'. If None, not sent.",
     )
 
     # Timing configuration
@@ -415,6 +420,13 @@ class BaseRunConfig(BaseModel):
             default="full",
         ),
     ]
+    review_model: Annotated[
+        str,
+        Field(
+            description="LLM model to use for review calls when auto_review is enabled.",
+            default=DEFAULT_LLM_EVAL_USER_SIMULATOR,
+        ),
+    ]
     hallucination_retries: Annotated[
         int,
         Field(
@@ -451,6 +463,13 @@ class BaseRunConfig(BaseModel):
     ]
 
     # ---- Abstract-ish properties (subclasses must override) ----
+
+    @model_validator(mode="after")
+    def _default_banking_retrieval_config(self) -> "BaseRunConfig":
+        """Default retrieval_config to alltools for banking_knowledge."""
+        if self.domain == "banking_knowledge" and self.retrieval_config is None:
+            object.__setattr__(self, "retrieval_config", "alltools")
+        return self
 
     @property
     def effective_agent(self) -> str:
@@ -537,6 +556,22 @@ class TextRunConfig(BaseRunConfig):
         Field(
             description="The maximum number of conversation turns",
             default=DEFAULT_MAX_STEPS,
+        ),
+    ]
+    max_agent_steps: Annotated[
+        Optional[int],
+        Field(
+            description="Maximum number of generated agent steps. Agent text responses and tool-call messages each count as one step. None means no agent-step budget.",
+            default=None,
+            ge=1,
+        ),
+    ]
+    turns_remaining_interval: Annotated[
+        int,
+        Field(
+            description="Append agent-steps remaining notice to user messages every Nth user turn. Must be >= 1.",
+            default=1,
+            ge=1,
         ),
     ]
     enforce_communication_protocol: Annotated[
@@ -1183,6 +1218,10 @@ class Info(BaseModel):
     git_commit: str = Field(description="The git commit hash.")
     num_trials: int = Field(description="The number of trials.")
     max_steps: int = Field(description="The maximum number of steps.")
+    max_agent_steps: Optional[int] = Field(
+        description="Maximum number of generated agent steps.",
+        default=None,
+    )
     max_errors: int = Field(description="The maximum number of errors.")
     user_info: UserInfo = Field(description="User information.")
     agent_info: AgentInfo = Field(description="Agent information.")
@@ -1216,12 +1255,15 @@ class TerminationReason(str, Enum):
     USER_STOP = "user_stop"
     AGENT_STOP = "agent_stop"
     MAX_STEPS = "max_steps"
+    MAX_AGENT_STEPS = "max_agent_steps"
     TIMEOUT = "timeout"
     TOO_MANY_ERRORS = "too_many_errors"
     AGENT_ERROR = "agent_error"
     USER_ERROR = "user_error"
     INFRASTRUCTURE_ERROR = "infrastructure_error"  # Task failed due to infrastructure (e.g., API disconnect)
     CONTEXT_WINDOW_EXCEEDED = "context_window_exceeded"
+    EMPTY_TOOL_CALLS_AND_CONTENT = "empty_tool_calls_and_content"
+    EMPTY_USER_MESSAGE = "empty_user_message"
     UNEXPECTED_ERROR = "unexpected_error"
 
 
@@ -1238,6 +1280,18 @@ class SimulationRun(BaseModel):
     start_time: str = Field(description="The start time of the simulation.")
     end_time: str = Field(description="The end time of the simulation.")
     duration: float = Field(description="The duration of the simulation.")
+    num_steps: Optional[int] = Field(
+        description="Number of orchestrator steps executed.",
+        default=None,
+    )
+    agent_steps: Optional[int] = Field(
+        description="Number of generated agent steps. Text replies and tool-call messages each count as one step.",
+        default=None,
+    )
+    max_agent_steps: Optional[int] = Field(
+        description="Configured maximum number of generated agent steps.",
+        default=None,
+    )
     termination_reason: TerminationReason = Field(
         description="The reason for the termination of the simulation."
     )
@@ -1254,6 +1308,12 @@ class SimulationRun(BaseModel):
         description="The messages exchanged between the user, agent and environment. "
         "Populated for half-duplex simulations. For full-duplex, use get_messages() "
         "which derives messages from ticks when this field is None.",
+        default=None,
+    )
+    agent_messages: Optional[list[Message]] = Field(
+        description="Agent-visible message history for half-duplex simulations. "
+        "This may include environment reminders injected into messages sent to "
+        "the agent while messages remains the canonical user-clean transcript.",
         default=None,
     )
     ticks: Optional[list[Tick]] = Field(
@@ -1634,11 +1694,15 @@ class Results(BaseModel):
             "user_cost": sim.user_cost,
             "termination_reason": sim.termination_reason,
             "duration": sim.duration,
+            "num_steps": sim.num_steps,
+            "agent_steps": sim.agent_steps,
+            "max_agent_steps": sim.max_agent_steps,
             "num_messages": len(sim.get_messages()),
             "info_git_commit": info.git_commit,
             "info_seed": info.seed,
             "info_num_trials": info.num_trials,
             "info_max_steps": info.max_steps,
+            "info_max_agent_steps": info.max_agent_steps,
             "info_max_errors": info.max_errors,
             "info_domain": info.environment_info.domain_name,
             "info_user_implementation": info.user_info.implementation,

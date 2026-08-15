@@ -85,7 +85,7 @@ class EvaluationType(str, Enum):
     ALL_WITH_NL_ASSERTIONS_IGNORE_BASIS = "all_with_nl_assertions_ignore_basis"
 
 
-def evaluate_simulation(
+async def evaluate_simulation(
     simulation: SimulationRun,
     task: Task,
     evaluation_type: EvaluationType,
@@ -93,6 +93,7 @@ def evaluate_simulation(
     domain: str,
     mode: CommunicationMode = CommunicationMode.HALF_DUPLEX,
     env_kwargs: dict = None,
+    strict_replay: bool = True,
 ) -> RewardInfo:
     """
     Evaluate the simulation based on the evaluation type.
@@ -106,6 +107,11 @@ def evaluate_simulation(
         mode: The communication mode (HALF_DUPLEX or FULL_DUPLEX).
               Defaults to HALF_DUPLEX. In FULL_DUPLEX mode, evaluation uses
               simulation.ticks instead of simulation.messages.
+        strict_replay: Whether the environment replay should raise when a
+              replayed tool call's output differs from the recorded one.
+              Live evaluation keeps the default (True); trajectory re-grading
+              passes False so recorded outputs that cosmetically predate
+              current tool code do not abort the replay.
 
     Returns:
         RewardInfo with the evaluation results.
@@ -169,6 +175,7 @@ def evaluate_simulation(
             full_trajectory=trajectory,
             solo_mode=solo_mode,
             env_kwargs=env_kwargs,
+            strict_replay=strict_replay,
         )
     elif evaluation_type == EvaluationType.NL_ASSERTIONS:
         reward_info = NLEvaluator.calculate_reward(
@@ -193,6 +200,7 @@ def evaluate_simulation(
             full_trajectory=trajectory,
             solo_mode=solo_mode,
             env_kwargs=env_kwargs,
+            strict_replay=strict_replay,
         )
         action_reward_info = ActEvaluator.calculate_reward(
             task=task,
@@ -206,7 +214,7 @@ def evaluate_simulation(
         nl_reward_info = None
         task_needs_nl = RewardType.NL_ASSERTION in task.evaluation_criteria.reward_basis
         if evaluation_type == EvaluationType.ALL_WITH_NL_ASSERTIONS or task_needs_nl:
-            nl_reward_info = NLEvaluator.calculate_reward(
+            nl_reward_info = await NLEvaluator.calculate_reward(
                 task=task,
                 full_trajectory=trajectory,
             )

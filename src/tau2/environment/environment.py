@@ -295,9 +295,21 @@ class Environment:
         initialization_data: Optional[InitializationData],
         initialization_actions: Optional[list[EnvFunctionCall]],
         message_history: list[Message],
+        strict: bool = True,
     ):
         """
         Set the state of the environment given initialization data and a list of messages.
+
+        Args:
+            strict: When True (default), raise if a replayed mutating tool call
+                returns different content than the recorded ToolMessage. When
+                False, log a warning instead and continue the replay. Lenient
+                mode is intended for re-grading historical trajectories whose
+                recorded tool outputs contain cosmetic drift against current
+                tool code (e.g. numeric argument echoes rendered as `25` by the
+                code that produced them but `25.0` after numeric-argument
+                normalization); the state mutation is applied identically
+                either way.
         """
         if self.solo_mode:
             assert all(
@@ -357,10 +369,19 @@ class Environment:
         action_responses = get_actions_from_messages(message_history)
         for tool_call, expected_response in action_responses:
             if not self._has_tool(tool_call.name):
-                raise ValueError(
-                    f"Unknown tool '{tool_call.name}' encountered during replay. "
-                    "The tool does not exist in the current environment."
+                # Hallucinated tool name. The live env returned a
+                # ToolMessage(error=True) for this call and made no state
+                # change, so replay it as a no-op. The agent's subsequent
+                # recovery (if any) will still be replayed and determine
+                # the final state. Repeated hallucination is bounded
+                # upstream by the orchestrator's max_errors guard, which
+                # ends the live sim with TerminationReason.TOO_MANY_ERRORS
+                # before evaluation runs.
+                logger.debug(
+                    f"Skipping unknown tool '{tool_call.name}' during replay "
+                    "(no-op, matching live env behavior on hallucinated tools)."
                 )
+                continue
             # Non-mutating tools (reads, thinks, etc.) don't change state --
             # skip them to avoid re-execution and non-deterministic output
             # comparison issues.
@@ -376,8 +397,15 @@ class Environment:
             except json.JSONDecodeError:
                 expected_content = expected_response.content
             if content != expected_content:
-                raise ValueError(
-                    f"Tool call:\n{tool_call}\n\nReturned:\n{response}\n\nExpected:\n{expected_response}"
+                if strict:
+                    raise ValueError(
+                        f"Tool call:\n{tool_call}\n\nReturned:\n{response}\n\nExpected:\n{expected_response}"
+                    )
+                logger.warning(
+                    f"Replayed tool call '{tool_call.name}' returned different "
+                    f"content than the recorded ToolMessage; continuing because "
+                    f"strict=False. Recorded output may predate current tool "
+                    f"code.\nTool call:\n{tool_call}"
                 )
         self.sync_tools()
 

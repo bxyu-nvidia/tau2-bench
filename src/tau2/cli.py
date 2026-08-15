@@ -8,6 +8,7 @@ from tau2.config import (
     DEFAULT_INTEGRATION_DURATION_SECONDS,
     DEFAULT_INTERRUPTION_CHECK_INTERVAL_SECONDS,
     DEFAULT_LLM_AGENT,
+    DEFAULT_LLM_EVAL_USER_SIMULATOR,
     DEFAULT_LLM_LOG_MODE,
     DEFAULT_LLM_TEMPERATURE_AGENT,
     DEFAULT_LLM_TEMPERATURE_USER,
@@ -132,6 +133,18 @@ def add_run_args(parser):
         help=f"The maximum number of steps to run the simulation. Default is {DEFAULT_MAX_STEPS}.",
     )
     parser.add_argument(
+        "--max-agent-steps",
+        type=int,
+        default=None,
+        help="Maximum number of generated agent steps before terminating. Agent text responses and tool-call messages each count as one step. Disabled by default.",
+    )
+    parser.add_argument(
+        "--turns-remaining-interval",
+        type=int,
+        default=1,
+        help="Append the agent-steps remaining notice to every Nth user message. Default is 1.",
+    )
+    parser.add_argument(
         "--max-errors",
         type=int,
         default=DEFAULT_MAX_ERRORS,
@@ -247,7 +260,7 @@ def add_run_args(parser):
         type=str,
         default=None,
         help="Cascaded config preset name for livekit provider. "
-        "Available presets: 'default', 'openai-thinking', 'openai-thinking-high'. "
+        "Available presets: 'default', 'openai-thinking'. "
         "See tau2.voice.audio_native.livekit.config for details.",
     )
     parser.add_argument(
@@ -255,6 +268,13 @@ def add_run_args(parser):
         type=str,
         default=None,
         help="Audio native model to use. If not specified, uses the default model for the selected provider.",
+    )
+    parser.add_argument(
+        "--reasoning-effort",
+        type=str,
+        choices=["minimal", "low", "medium", "high", "xhigh"],
+        default=None,
+        help="Reasoning effort for thinking models. Only applies to providers that support it (e.g. OpenAI).",
     )
     parser.add_argument(
         "--tick-duration",
@@ -370,10 +390,10 @@ def add_run_args(parser):
         help=(
             "Knowledge retrieval config name (banking_knowledge domain). "
             "Offline: no_knowledge, full_kb, golden_retrieval, bm25, bm25_grep, grep_only. "
-            "Requires OPENAI_API_KEY: openai_embeddings*. "
-            "Requires OPENROUTER_API_KEY: qwen_embeddings*. "
-            "Requires sandbox-runtime: terminal_use*. "
-            "Default: bm25."
+            "Requires OPENAI_API_KEY: openai_embeddings*, alltools. "
+            "Requires OPENROUTER_API_KEY: qwen_embeddings*, alltools-qwen. "
+            "Requires sandbox-runtime: terminal_use*, alltools, alltools-qwen. "
+            "Default for banking_knowledge: alltools (BM25 + dense + shell)."
         ),
     )
     parser.add_argument(
@@ -404,6 +424,12 @@ def add_run_args(parser):
         choices=["full", "user"],
         default="full",
         help="Review mode when --auto-review is enabled: 'full' (agent+user errors, default) or 'user' (user simulator only).",
+    )
+    parser.add_argument(
+        "--review-model",
+        type=str,
+        default=DEFAULT_LLM_EVAL_USER_SIMULATOR,
+        help=f"LLM model to use for review calls. Default is {DEFAULT_LLM_EVAL_USER_SIMULATOR}.",
     )
     parser.add_argument(
         "--hallucination-retries",
@@ -595,6 +621,7 @@ def main():
                 provider=args.audio_native_provider,
                 model=audio_native_model,
                 cascaded_config_name=args.cascaded_config,
+                reasoning_effort=args.reasoning_effort,
                 # Timing
                 tick_duration_seconds=args.tick_duration,
                 max_steps_seconds=args.max_steps_seconds,
@@ -640,6 +667,7 @@ def main():
             auto_resume=args.auto_resume,
             auto_review=args.auto_review,
             review_mode=args.review_mode,
+            review_model=args.review_model,
             hallucination_retries=args.hallucination_retries,
             retrieval_config=args.retrieval_config,
             retrieval_config_kwargs=args.retrieval_config_kwargs,
@@ -661,6 +689,8 @@ def main():
                 llm_args_agent=args.agent_llm_args,
                 user=args.user,
                 max_steps=args.max_steps,
+                max_agent_steps=args.max_agent_steps,
+                turns_remaining_interval=args.turns_remaining_interval,
                 enforce_communication_protocol=args.enforce_communication_protocol,
             )
 
@@ -742,6 +772,11 @@ def main():
         "--output-dir",
         help="Directory to save updated trajectory files with recomputed rewards. If not provided, only displays metrics.",
     )
+    evaluate_parser.add_argument(
+        "--fresh-tasks",
+        action="store_true",
+        help="Re-grade against the current task definitions from the data directory instead of the ones embedded in each results file.",
+    )
     evaluate_parser.set_defaults(func=lambda args: run_evaluate_trajectories(args))
 
     # Review command - LLM-based conversation review
@@ -801,6 +836,12 @@ def main():
         "--log-llm",
         action="store_true",
         help="Log LLM request/response for each review call",
+    )
+    review_parser.add_argument(
+        "--review-model",
+        type=str,
+        default=DEFAULT_LLM_EVAL_USER_SIMULATOR,
+        help=f"LLM model to use for review calls. Default is {DEFAULT_LLM_EVAL_USER_SIMULATOR}.",
     )
     review_parser.set_defaults(func=lambda args: run_review(args))
 
@@ -890,6 +931,26 @@ def main():
     )
     submit_verify_parser.set_defaults(func=lambda args: run_verify_trajectories(args))
 
+    # Submit interaction-metrics subcommand
+    submit_im_parser = submit_subparsers.add_parser(
+        "interaction-metrics",
+        help="Compute voice interaction metrics (latency, responsiveness, "
+        "interrupts, selectivity) from full-duplex trajectories",
+    )
+    submit_im_parser.add_argument(
+        "input_paths",
+        nargs="+",
+        help="Voice experiment directories (results.json + simulations/) or a "
+        "parent directory such as a submission's trajectories/ dir",
+    )
+    submit_im_parser.add_argument(
+        "--output",
+        "-o",
+        default=None,
+        help="Optional path to write the interaction_metrics JSON block",
+    )
+    submit_im_parser.set_defaults(func=lambda args: run_interaction_metrics(args))
+
     # Convert results format command
     convert_parser = subparsers.add_parser(
         "convert-results",
@@ -976,7 +1037,9 @@ def run_evaluate_trajectories(args):
 
     logger.configure(handlers=[{"sink": sys.stderr, "level": "ERROR"}])
 
-    evaluate_trajectories(args.paths, args.output_dir)
+    evaluate_trajectories(
+        args.paths, args.output_dir, fresh_tasks=getattr(args, "fresh_tasks", False)
+    )
 
 
 def run_review(args):
@@ -1029,6 +1092,7 @@ def run_review(args):
             limit=args.limit,
             task_ids=args.task_ids,
             log_llm=args.log_llm,
+            review_model=args.review_model,
         )
 
 
@@ -1049,6 +1113,18 @@ def run_validate_submission(args):
     from tau2.scripts.leaderboard.prepare_submission import validate_submission
 
     validate_submission(submission_dir=args.submission_dir)
+
+
+def run_interaction_metrics(args):
+    """Run the interaction metrics computation command."""
+    from tau2.scripts.leaderboard.compute_interaction_metrics import (
+        compute_interaction_metrics,
+    )
+
+    compute_interaction_metrics(
+        input_paths=args.input_paths,
+        output_path=args.output,
+    )
 
 
 def run_manual_mode():

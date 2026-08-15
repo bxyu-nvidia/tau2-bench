@@ -1,10 +1,12 @@
 import json
+import sys
 import time
 import uuid
 from abc import ABC, abstractmethod
 from copy import deepcopy
 from datetime import datetime, timedelta
 from enum import Enum
+from os import getenv
 from pathlib import Path
 from typing import Any, Generic, Optional, TypeVar
 
@@ -13,7 +15,6 @@ from loguru import logger
 from tau2.agent.base_agent import (
     AgentError,
     HalfDuplexAgent,
-    is_valid_agent_history_message,
 )
 from tau2.agent.llm_agent import LLMSoloAgent
 from tau2.data_model.message import (
@@ -47,6 +48,7 @@ class Role(str, Enum):
 DEFAULT_FIRST_AGENT_MESSAGE = AssistantMessage(
     role="assistant", content="Hi! How can I help you today?", cost=0.0
 )
+AGENT_STEPS_REMAINING_NOTICE_TEMPLATE = "ENVIRONMENT REMINDER: You have {remaining_agent_steps} turns left to complete the task."
 
 # Type variables for generic orchestrators
 # Base types for BaseOrchestrator - unbound to allow both half-duplex and full-duplex
@@ -257,7 +259,7 @@ class BaseOrchestrator(ABC, Generic[BaseAgentT, BaseUserT, TrajectoryItemT]):
         except Exception as e:
             logger.warning(f"Error during user cleanup: {e}")
 
-    def run(self) -> SimulationRun:
+    async def run(self) -> SimulationRun:
         """
         Run the simulation.
 
@@ -277,8 +279,18 @@ class BaseOrchestrator(ABC, Generic[BaseAgentT, BaseUserT, TrajectoryItemT]):
         finalized = False
         try:
             while not self.done:
-                self.step()
+                await self.step()
                 self._check_termination()
+
+                if (
+                    self.step_count % 10 == 0
+                    and getenv("NEMO_GYM_TAU2_STEP_COUNT_PRINT") == "true"
+                ):
+                    print(
+                        f"Task ID {self.task.id} step {self.step_count} ({time.perf_counter() - self._run_start_perf:.2f}s)",
+                        file=sys.stderr,
+                    )
+
             result = self._finalize()
             finalized = True
             return result
@@ -399,6 +411,8 @@ class Orchestrator(BaseOrchestrator[AgentT, UserT, Message]):
         environment: Environment,
         task: Task,
         max_steps: int = 100,
+        max_agent_steps: Optional[int] = None,
+        turns_remaining_interval: int = 1,
         max_errors: int = 10,
         seed: Optional[int] = None,
         solo_mode: bool = False,
@@ -420,6 +434,11 @@ class Orchestrator(BaseOrchestrator[AgentT, UserT, Message]):
             environment: The environment instance that handles tool execution and maintains state.
             task: The task specification containing initial state, goals, and evaluation criteria.
             max_steps: Maximum number of simulation steps before termination. Defaults to 100.
+            max_agent_steps: Maximum number of generated agent steps before termination.
+                Agent text responses and tool-call messages each count as one agent step.
+                None means no agent-step budget. Defaults to None.
+            turns_remaining_interval: Append turns-remaining notice to user messages every Nth
+                user turn. Must be >= 1. Defaults to 1.
             max_errors: Maximum number of tool execution errors before termination. Defaults to 10.
             seed: Optional random seed for reproducibility of agent and user behavior. Defaults to None.
             solo_mode: If True, agent operates without user interaction (only tool calls allowed).
@@ -448,6 +467,15 @@ class Orchestrator(BaseOrchestrator[AgentT, UserT, Message]):
         self.trajectory: list[Message] = []
         self.solo_mode = solo_mode
         self.validate_communication = validate_communication
+        if max_agent_steps is not None and max_agent_steps <= 0:
+            raise ValueError(f"max_agent_steps must be >= 1, got {max_agent_steps}")
+        self.max_agent_steps = max_agent_steps
+        self.agent_steps_count = 0
+        if turns_remaining_interval <= 0:
+            raise ValueError(
+                f"turns_remaining_interval must be >= 1, got {turns_remaining_interval}"
+            )
+        self.turns_remaining_interval = turns_remaining_interval
 
         # Turn-based routing state
         self.from_role: Optional[Role] = None
@@ -504,6 +532,7 @@ class Orchestrator(BaseOrchestrator[AgentT, UserT, Message]):
 
         # Add timestamps to the message history
         message_history = self._add_timestamps(message_history)
+        self.agent_steps_count = self._count_generated_agent_messages(message_history)
 
         if self.solo_mode:
             assert self.environment.solo_mode, "Environment should be in solo mode"
@@ -540,11 +569,7 @@ class Orchestrator(BaseOrchestrator[AgentT, UserT, Message]):
                 else:  # Last message is for the environment
                     self.to_role = Role.ENV
                 self.agent_state = self.agent.get_init_state(
-                    message_history=[
-                        msg
-                        for msg in message_history
-                        if is_valid_agent_history_message(msg)
-                    ]
+                    message_history=self.get_agent_messages(message_history)
                 )
                 self.user_state = self.user.get_init_state(
                     message_history=[
@@ -572,11 +597,7 @@ class Orchestrator(BaseOrchestrator[AgentT, UserT, Message]):
                     ]
                 )
                 self.agent_state = self.agent.get_init_state(
-                    message_history=[
-                        msg
-                        for msg in message_history[:-1]
-                        if is_valid_agent_history_message(msg)
-                    ]
+                    message_history=self.get_agent_messages(message_history[:-1])
                 )
                 self.message = last_message
                 self.done = UserSimulator.is_stop(last_message)
@@ -588,11 +609,7 @@ class Orchestrator(BaseOrchestrator[AgentT, UserT, Message]):
                 if last_message.requestor == "assistant":
                     self.to_role = Role.AGENT
                     self.agent_state = self.agent.get_init_state(
-                        message_history=[
-                            msg
-                            for msg in message_history[:-1]
-                            if is_valid_agent_history_message(msg)
-                        ]
+                        message_history=self.get_agent_messages(message_history[:-1])
                     )
                     self.user_state = self.user.get_init_state(
                         message_history=[
@@ -604,11 +621,7 @@ class Orchestrator(BaseOrchestrator[AgentT, UserT, Message]):
                 else:
                     self.to_role = Role.USER
                     self.agent_state = self.agent.get_init_state(
-                        message_history=[
-                            msg
-                            for msg in message_history
-                            if is_valid_agent_history_message(msg)
-                        ]
+                        message_history=self.get_agent_messages(message_history)
                     )
                     self.user_state = self.user.get_init_state(
                         message_history=[
@@ -641,6 +654,7 @@ class Orchestrator(BaseOrchestrator[AgentT, UserT, Message]):
                 first_message, self.agent_state = self.agent.generate_next_message(
                     None, self.agent_state
                 )
+                self.agent_steps_count += 1
                 self.trajectory = [first_message]
                 self.message = first_message
                 # In solo mode, there is no user, so if the message is not a tool call, then we end and report an agent error
@@ -731,6 +745,127 @@ class Orchestrator(BaseOrchestrator[AgentT, UserT, Message]):
                     f"{self.from_role.value} can only send tool calls. {self.message}"
                 )
 
+    def _agent_step_budget_exhausted(self) -> bool:
+        """Return True when the agent has used all configured agent steps."""
+        return (
+            self.max_agent_steps is not None
+            and self.agent_steps_count >= self.max_agent_steps
+        )
+
+    @staticmethod
+    def _count_generated_agent_messages(messages: list[Message]) -> int:
+        """Count generated assistant messages, excluding Tau2's default greeting."""
+        count = 0
+        seen_agent_message = False
+        for msg in messages:
+            if not isinstance(msg, AssistantMessage):
+                continue
+            if not seen_agent_message and msg == DEFAULT_FIRST_AGENT_MESSAGE:
+                seen_agent_message = True
+                continue
+            seen_agent_message = True
+            count += 1
+        return count
+
+    def _count_user_visible_turns(self) -> int:
+        """Count user turns that are visible to the agent (non-tool user messages)."""
+        return sum(
+            1
+            for msg in self.trajectory
+            if isinstance(msg, UserMessage) and not msg.is_tool_call()
+        )
+
+    def _should_append_turns_remaining_notice(self, user_turn_idx: int) -> bool:
+        """Return True when this user turn should include agent-steps notice."""
+        return user_turn_idx % self.turns_remaining_interval == 0
+
+    def _get_agent_steps_remaining_notice(
+        self, agent_steps_count: Optional[int] = None
+    ) -> Optional[str]:
+        """Return the agent-steps remaining notice when an agent-step budget is set."""
+        if self.max_agent_steps is None:
+            return None
+
+        if agent_steps_count is None:
+            agent_steps_count = self.agent_steps_count
+        remaining_agent_steps = max(self.max_agent_steps - agent_steps_count, 0)
+        return AGENT_STEPS_REMAINING_NOTICE_TEMPLATE.format(
+            remaining_agent_steps=remaining_agent_steps
+        )
+
+    def _append_notice_to_content(self, content: Optional[str], notice: str) -> str:
+        """Append a notice to optional message content."""
+        if content:
+            return f"{content}\n\n{notice}"
+        return notice
+
+    def _append_agent_steps_remaining_notice_to_user_message(
+        self,
+        message: UserMessage,
+        user_turn_idx: Optional[int] = None,
+        agent_steps_count: Optional[int] = None,
+    ) -> UserMessage:
+        """Append agent-steps notice to a user message sent to the agent."""
+        notice = self._get_agent_steps_remaining_notice(agent_steps_count)
+        if notice is None:
+            return message
+
+        if user_turn_idx is None:
+            user_turn_idx = self._count_user_visible_turns()
+        if not self._should_append_turns_remaining_notice(user_turn_idx):
+            return message
+
+        patched_message = deepcopy(message)
+        patched_message.content = self._append_notice_to_content(
+            patched_message.content, notice
+        )
+        return patched_message
+
+    def _append_agent_steps_remaining_notice_to_tool_message(
+        self,
+        message: ToolMessage,
+        agent_steps_count: Optional[int] = None,
+    ) -> ToolMessage:
+        """Append agent-steps notice to a tool message sent to the agent."""
+        notice = self._get_agent_steps_remaining_notice(agent_steps_count)
+        if notice is None:
+            return message
+
+        patched_message = deepcopy(message)
+        patched_message.content = self._append_notice_to_content(
+            patched_message.content, notice
+        )
+        return patched_message
+
+    def _append_agent_steps_remaining_notice_to_multi_tool_message(
+        self,
+        message: MultiToolMessage,
+        agent_steps_count: Optional[int] = None,
+    ) -> MultiToolMessage:
+        """Append agent-steps notice to the last tool message sent to the agent."""
+        notice = self._get_agent_steps_remaining_notice(agent_steps_count)
+        if notice is None or not message.tool_messages:
+            return message
+
+        patched_message = deepcopy(message)
+        last_tool_message = patched_message.tool_messages[-1]
+        last_tool_message.content = self._append_notice_to_content(
+            last_tool_message.content, notice
+        )
+        return patched_message
+
+    def _append_agent_steps_remaining_notice(self, message: Message) -> Message:
+        """Append agent-steps notice to messages that are about to be sent to the agent."""
+        if isinstance(message, UserMessage) and not message.is_tool_call():
+            return self._append_agent_steps_remaining_notice_to_user_message(message)
+        if isinstance(message, ToolMessage):
+            return self._append_agent_steps_remaining_notice_to_tool_message(message)
+        if isinstance(message, MultiToolMessage):
+            return self._append_agent_steps_remaining_notice_to_multi_tool_message(
+                message
+            )
+        return message
+
     def _check_termination(self) -> None:
         """
         Check for half-duplex specific termination conditions.
@@ -744,6 +879,13 @@ class Orchestrator(BaseOrchestrator[AgentT, UserT, Message]):
         if self.step_count >= self.max_steps:
             self.done = True
             self.termination_reason = TerminationReason.MAX_STEPS
+        if (
+            not self.done
+            and self.to_role == Role.AGENT
+            and self._agent_step_budget_exhausted()
+        ):
+            self.done = True
+            self.termination_reason = TerminationReason.MAX_AGENT_STEPS
         if self.num_errors >= self.max_errors:
             self.done = True
             self.termination_reason = TerminationReason.TOO_MANY_ERRORS
@@ -803,24 +945,45 @@ class Orchestrator(BaseOrchestrator[AgentT, UserT, Message]):
         ):
             speech_environment = self.user.voice_settings.speech_environment
 
+        agent_steps_budget = (
+            "unlimited" if self.max_agent_steps is None else str(self.max_agent_steps)
+        )
+        logger.info(
+            f"Simulation {self.simulation_id} used {self.agent_steps_count} "
+            f"agent steps and {self.step_count} orchestrator steps "
+            f"(max_agent_steps={agent_steps_budget})"
+        )
+
         simulation_run = SimulationRun(
             id=self.simulation_id,
             task_id=self.task.id,
             start_time=self._run_start_time,
             end_time=get_now(),
             duration=duration,
+            num_steps=self.step_count,
+            agent_steps=self.agent_steps_count,
+            max_agent_steps=self.max_agent_steps,
             termination_reason=self.termination_reason.value,
             reward_info=None,
             user_cost=user_cost,
             agent_cost=agent_cost,
             messages=messages,
+            agent_messages=self.get_agent_messages(messages),
             seed=self.seed,
             mode=self.mode.value,
             speech_environment=speech_environment,
+            info={
+                "empty_user_response_attempts": getattr(
+                    self.user_state, "empty_user_response_attempts", 0
+                ),
+                "empty_user_response_fallbacks": getattr(
+                    self.user_state, "empty_user_response_fallbacks", 0
+                ),
+            },
         )
         return simulation_run
 
-    def step(self):
+    async def step(self):
         """
         Perform one step of the simulation using half-duplex (turn-based) communication.
 
@@ -838,10 +1001,26 @@ class Orchestrator(BaseOrchestrator[AgentT, UserT, Message]):
         )
         # AGENT/ENV -> USER
         if self.from_role in [Role.AGENT, Role.ENV] and self.to_role == Role.USER:
-            user_msg, self.user_state = self.user.generate_next_message(
+            user_msg, self.user_state = await self.user.generate_next_message(
                 self.message, self.user_state
             )
-            user_msg.validate()
+            # Catch empty/malformed user messages — the user simulator retries a
+            # bounded number of times and then returns the empty message. We preserve
+            # it for debugging (mirrors the empty-agent-message path) and terminate.
+            try:
+                user_msg.validate()
+            except Exception as e:
+                logger.warning(
+                    f"User returned an empty / malformed message — preserving for debug. "
+                    f"content={getattr(user_msg, 'content', None)!r}, "
+                    f"tool_calls={getattr(user_msg, 'tool_calls', None)!r}, "
+                    f"validate_error={e}"
+                )
+                self.trajectory.append(user_msg)
+                self.message = user_msg
+                self.done = True
+                self.termination_reason = TerminationReason.EMPTY_USER_MESSAGE
+                return
             if UserSimulator.is_stop(user_msg):
                 self.done = True
                 self.termination_reason = TerminationReason.USER_STOP
@@ -859,10 +1038,41 @@ class Orchestrator(BaseOrchestrator[AgentT, UserT, Message]):
         elif (
             self.from_role == Role.USER or self.from_role == Role.ENV
         ) and self.to_role == Role.AGENT:
-            agent_msg, self.agent_state = self.agent.generate_next_message(
-                self.message, self.agent_state
+            if self._agent_step_budget_exhausted():
+                self.done = True
+                self.termination_reason = TerminationReason.MAX_AGENT_STEPS
+                return
+
+            agent_input_message = self._append_agent_steps_remaining_notice(
+                self.message
             )
-            agent_msg.validate()
+
+            agent_msg, self.agent_state = await self.agent.generate_next_message(
+                agent_input_message, self.agent_state
+            )
+            # Catch malformed agent responses — NeMo Gym OpenAI client returns an empty
+            # message (no content + no tool calls) in several edge cases (context window
+            # exceeded, model produces only </think> reasoning then nothing, etc.).
+            # We append the malformed message to the trajectory FIRST so its reasoning_content
+            # (and any other diagnostic data) survives in logs/output, then terminate cleanly.
+            try:
+                agent_msg.validate()
+            except Exception as e:
+                logger.warning(
+                    f"Agent returned an empty / malformed message — preserving for debug. "
+                    f"reasoning_content={getattr(agent_msg, 'reasoning_content', None)!r}, "
+                    f"content={getattr(agent_msg, 'content', None)!r}, "
+                    f"tool_calls={getattr(agent_msg, 'tool_calls', None)!r}, "
+                    f"validate_error={e}"
+                )
+                self.trajectory.append(agent_msg)
+                self.message = agent_msg
+                self.done = True
+                self.termination_reason = TerminationReason.EMPTY_TOOL_CALLS_AND_CONTENT
+                return
+
+            self.agent_steps_count += 1
+
             if self.agent.is_stop(agent_msg):
                 self.done = True
                 self.termination_reason = TerminationReason.AGENT_STOP
@@ -896,6 +1106,13 @@ class Orchestrator(BaseOrchestrator[AgentT, UserT, Message]):
             )
         if self.validate_communication:
             self.check_communication_error()
+        if (
+            not self.done
+            and self.to_role == Role.AGENT
+            and self._agent_step_budget_exhausted()
+        ):
+            self.done = True
+            self.termination_reason = TerminationReason.MAX_AGENT_STEPS
         self.step_count += 1
         self.environment.sync_tools()
 
@@ -914,6 +1131,96 @@ class Orchestrator(BaseOrchestrator[AgentT, UserT, Message]):
             msg.turn_idx = i
             trajectory.append(msg)
         return trajectory
+
+    def get_agent_messages(
+        self, messages: Optional[list[Message]] = None
+    ) -> list[Message]:
+        """
+        Get the agent-visible message history.
+
+        This view is derived from the canonical trajectory and includes the
+        environment reminders that are injected into messages sent to the agent.
+        It intentionally excludes user-only tool calls/results and any terminal
+        input that was never forwarded to the agent, so it can be used for agent
+        replay/debugging without leaking reminders into user history.
+        """
+        if messages is None:
+            source_messages = self.get_trajectory()
+        else:
+            source_messages = sorted(
+                deepcopy(messages),
+                key=lambda x: x.timestamp,
+            )
+
+        agent_messages: list[Message] = []
+        agent_steps_seen = 0
+        user_visible_turn_idx = 0
+        seen_agent_message = False
+        last_assistant_idx = max(
+            (
+                idx
+                for idx, msg in enumerate(source_messages)
+                if isinstance(msg, AssistantMessage)
+            ),
+            default=-1,
+        )
+        has_pending_agent_input = self.done and (
+            self.to_role == Role.AGENT
+            or self.termination_reason == TerminationReason.EMPTY_USER_MESSAGE
+        )
+
+        for msg_idx, msg in enumerate(source_messages):
+            if isinstance(msg, AssistantMessage):
+                agent_msg = deepcopy(msg)
+                agent_messages.append(agent_msg)
+                if not seen_agent_message and agent_msg == DEFAULT_FIRST_AGENT_MESSAGE:
+                    seen_agent_message = True
+                    continue
+                seen_agent_message = True
+                agent_steps_seen += 1
+            elif has_pending_agent_input and msg_idx > last_assistant_idx:
+                # A trailing user or tool message without a subsequent agent
+                # output was never forwarded to the agent.
+                continue
+            elif isinstance(msg, UserMessage):
+                if msg.is_tool_call():
+                    continue
+                user_visible_turn_idx += 1
+                agent_messages.append(
+                    self._append_agent_steps_remaining_notice_to_user_message(
+                        msg,
+                        user_turn_idx=user_visible_turn_idx,
+                        agent_steps_count=agent_steps_seen,
+                    )
+                )
+            elif isinstance(msg, ToolMessage):
+                if msg.requestor != "assistant":
+                    continue
+                agent_messages.append(
+                    self._append_agent_steps_remaining_notice_to_tool_message(
+                        msg,
+                        agent_steps_count=agent_steps_seen,
+                    )
+                )
+            elif isinstance(msg, MultiToolMessage):
+                tool_messages = [
+                    deepcopy(tool_msg)
+                    for tool_msg in msg.tool_messages
+                    if tool_msg.requestor == "assistant"
+                ]
+                if not tool_messages:
+                    continue
+                patched_message = (
+                    self._append_agent_steps_remaining_notice_to_multi_tool_message(
+                        MultiToolMessage(role="tool", tool_messages=tool_messages),
+                        agent_steps_count=agent_steps_seen,
+                    )
+                )
+                agent_messages.extend(patched_message.tool_messages)
+
+        for i, msg in enumerate(agent_messages):
+            msg.turn_idx = i
+        return agent_messages
 
     def get_messages(self) -> list[Message]:
         """

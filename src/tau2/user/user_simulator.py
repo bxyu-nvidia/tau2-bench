@@ -1,3 +1,5 @@
+import json
+import sys
 from typing import Generic, Optional, Tuple, TypeVar
 
 from loguru import logger
@@ -93,6 +95,10 @@ SYSTEM_PROMPT = """
 """.strip()
 
 
+# Number of times to retry the user simulator when it returns an empty message.
+DEFAULT_MAX_USER_RETRIES = 30
+
+
 UserStateType = TypeVar("UserStateType", bound="UserState")
 
 
@@ -118,6 +124,7 @@ class UserSimulator(
         persona_config: Optional[
             PersonaConfig
         ] = None,  # TODO: Should this be pushed to the base class?
+        max_user_retries: int = DEFAULT_MAX_USER_RETRIES,
     ):
         super().__init__(
             instructions=instructions,
@@ -126,6 +133,7 @@ class UserSimulator(
             llm_args=llm_args,
         )
         self.persona_config = persona_config or PersonaConfig()
+        self.max_user_retries = max_user_retries
 
     @property
     def global_simulation_guidelines(self) -> str:
@@ -195,15 +203,15 @@ class UserSimulator(
             or OUT_OF_SCOPE in message.content
         )
 
-    def generate_next_message(
+    async def generate_next_message(
         self, message: ValidUserInputMessage, state: UserStateType
     ) -> Tuple[UserMessage, UserStateType]:
-        user_message = self._generate_next_message(message, state)
+        user_message = await self._generate_next_message(message, state)
         # Updating state with response
         state.messages.append(user_message)
         return user_message, state
 
-    def _generate_next_message(
+    async def _generate_next_message(
         self, message: ValidUserInputMessage, state: UserStateType
     ) -> UserMessage:
         """Get the response from the user simulator.
@@ -231,38 +239,55 @@ class UserSimulator(
             state.messages.append(message)
         messages = state.system_messages + state.flip_roles()
 
-        # Generate response
-        assistant_message = generate(
-            model=self.llm,
-            messages=messages,
-            tools=self.tools,
-            call_name="user_simulator_response",
-            **self.llm_args,
+        # Reasoning models intermittently return an empty message (no content, no
+        # tool calls), which would fail validate() and crash the rollout. Retry a
+        # few times, then return the empty message so the orchestrator can hard-fail
+        # the trajectory (mirrors how empty agent messages are handled).
+        # Grep "EMPTY_USER_MESSAGE" for these events.
+        max_attempts = self.max_user_retries
+        for attempt in range(1, max_attempts + 1):
+            assistant_message = await generate(
+                model=self.llm,
+                messages=messages,
+                tools=self.tools,
+                call_name="user_simulator_response",
+                **self.llm_args,
+            )
+            user_message = UserMessage(
+                role="user",
+                content=assistant_message.content,
+                cost=assistant_message.cost,
+                usage=assistant_message.usage,
+                raw_data=assistant_message.raw_data,
+            )
+            if assistant_message.tool_calls is not None:
+                user_message.tool_calls = [
+                    ToolCall(id=tc.id, name=tc.name, arguments=tc.arguments, requestor="user")
+                    for tc in assistant_message.tool_calls
+                ]
+            if user_message.has_content() or user_message.is_tool_call():
+                logger.debug(f"Response: {user_message.content}")
+                return user_message
+
+            state.empty_user_response_attempts += 1
+            # print (not loguru): the Gym agent calls logger.remove(), so loguru
+            # warnings are suppressed. print goes to stdout and is always captured.
+            full_response = json.dumps(assistant_message.model_dump(mode="json"), default=str)
+            print(
+                f"EMPTY_USER_MESSAGE event=retry attempt={attempt}/{max_attempts} "
+                f"full_response={full_response}",
+                file=sys.stderr,
+                flush=True,
+            )
+
+        state.empty_user_response_fallbacks += 1
+        print(
+            f"EMPTY_USER_MESSAGE event=hard_fail attempts={max_attempts}",
+            file=sys.stderr,
+            flush=True,
         )
-
-        user_response = assistant_message.content
-        logger.debug(f"Response: {user_response}")
-
-        user_message = UserMessage(
-            role="user",
-            content=user_response,
-            cost=assistant_message.cost,
-            usage=assistant_message.usage,
-            raw_data=assistant_message.raw_data,
-        )
-
-        # flip the requestor of the tool calls
-        if assistant_message.tool_calls is not None:
-            user_message.tool_calls = []
-            for tool_call in assistant_message.tool_calls:
-                user_message.tool_calls.append(
-                    ToolCall(
-                        id=tool_call.id,
-                        name=tool_call.name,
-                        arguments=tool_call.arguments,
-                        requestor="user",
-                    )
-                )
+        # Return the last (empty) message; the orchestrator will fail the
+        # trajectory with TerminationReason.EMPTY_USER_MESSAGE.
         return user_message
 
 

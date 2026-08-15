@@ -13,6 +13,7 @@ import asyncio.base_events
 import json
 import multiprocessing
 import os
+import sys
 import random
 import threading
 import uuid
@@ -35,6 +36,7 @@ from tau2.data_model.simulation import (
 )
 from tau2.data_model.tasks import Task
 from tau2.data_model.voice import SynthesisConfig, VoiceSettings
+from tau2.data_model.voice_personas import warn_if_non_official_voices
 from tau2.evaluator.evaluator import EvaluationType
 from tau2.evaluator.reviewer import check_hallucination, format_hallucination_feedback
 from tau2.metrics.agent_metrics import compute_metrics
@@ -55,6 +57,7 @@ from tau2.user_simulation_voice_presets import COMPLEXITY_CONFIGS
 from tau2.utils.display import ConsoleDisplay, Text
 from tau2.utils.llm_utils import llm_log_mode, set_llm_log_dir, set_llm_log_mode
 from tau2.utils.utils import DATA_DIR
+from nemo_gym.global_config import GlobalConfigDictParserConfig, set_global_config_dict
 
 # Context variable to track current simulation_id for log filtering
 # This ensures task-specific log handlers only receive their own messages
@@ -131,6 +134,7 @@ def run_auto_review(
     simulation: SimulationRun,
     task: Task,
     review_mode: str,
+    review_model: str,
     user: str,
     llm_user: Optional[str],
     llm_args_user: Optional[dict],
@@ -145,6 +149,7 @@ def run_auto_review(
         simulation: The completed simulation to review.
         task: The task specification.
         review_mode: "full" (agent+user) or "user" (user only).
+        review_model: LLM model to use for review and auth classification.
         user: User implementation name.
         llm_user: LLM used by user simulator.
         llm_args_user: LLM args for user simulator.
@@ -180,6 +185,7 @@ def run_auto_review(
         user_info=review_user_info,
         policy=policy,
         interruption_enabled=is_audio_native,
+        review_model=review_model,
     )
 
     if review_mode == "full":
@@ -334,7 +340,7 @@ class _TaskLogContext:
 # =============================================================================
 
 
-def run_single_task(
+async def run_single_task(
     config: RunConfig,
     task: Task,
     *,
@@ -348,6 +354,7 @@ def run_single_task(
     audio_taps: bool = False,
     auto_review: bool = False,
     review_mode: str = "full",
+    review_model: Optional[str] = None,
     hallucination_feedback: Optional[str] = None,
 ) -> SimulationRun:
     """Run a single task simulation with logging and optional side effects.
@@ -371,6 +378,7 @@ def run_single_task(
         audio_debug: Enable audio debug analysis.
         auto_review: Run LLM conversation review after simulation.
         review_mode: Review mode ("full" or "user").
+        review_model: LLM model to use for review and auth classification.
 
     Returns:
         The completed SimulationRun with reward_info attached.
@@ -410,7 +418,7 @@ def run_single_task(
 
         # Layer 1: Run the simulation
         env_kwargs = _build_env_kwargs(config, task) or None
-        simulation = run_simulation(
+        simulation = await run_simulation(
             orchestrator, evaluation_type=evaluation_type, env_kwargs=env_kwargs
         )
 
@@ -420,6 +428,7 @@ def run_single_task(
                 simulation=simulation,
                 task=task,
                 review_mode=review_mode,
+                review_model=review_model or config.review_model,
                 user=config.effective_user,
                 llm_user=config.llm_user,
                 llm_args_user=config.llm_args_user,
@@ -552,7 +561,8 @@ def run_tasks(
         embedder_configs = None
         if retrieval_config:
             embedder_configs = get_unique_embedder_configs_for_retrieval_configs(
-                [retrieval_config]
+                [retrieval_config],
+                kwargs,
             )
         warm_kb_cache(embedder_configs)
         knowledge_base = get_knowledge_base()
@@ -625,6 +635,8 @@ def run_tasks(
     # (which get a fresh default context) can re-apply them.
     _main_thread_llm_log_mode = llm_log_mode.get()
 
+    set_global_config_dict(global_config_dict_parser_config=GlobalConfigDictParserConfig(skip_load_from_cli=True, skip_load_from_dotenv=True))
+
     def _run_tracked(
         task: Task, trial: int, seed: int, progress_str: str
     ) -> SimulationRun:
@@ -643,11 +655,11 @@ def run_tasks(
         )
         ConsoleDisplay.console.print(console_text)
 
-        def _execute(
+        async def _execute(
             run_seed: int = seed,
             hallucination_feedback: Optional[str] = None,
         ):
-            return run_single_task(
+            return await run_single_task(
                 config,
                 task,
                 seed=run_seed,
@@ -660,6 +672,7 @@ def run_tasks(
                 audio_taps=config.audio_taps if is_voice else False,
                 auto_review=config.auto_review,
                 review_mode=config.review_mode,
+                review_model=config.review_model,
                 hallucination_feedback=hallucination_feedback,
             )
 
@@ -832,7 +845,38 @@ def run_tasks(
         "\n[bold green]Successfully completed all simulations![/bold green]\n"
         "To review the simulations, run: [bold blue]tau2 view[/bold blue]"
     )
+    _log_empty_user_summary(simulation_results.simulations)
     return simulation_results
+
+
+def _log_empty_user_summary(simulations: list) -> None:
+    """Warn (at end of run) if the user simulator returned empty messages.
+
+    Reads the per-trajectory counters from SimulationRun.info. Grep
+    "EMPTY_USER_MESSAGE summary" for this line.
+    """
+    fallbacks = []
+    total_attempts = 0
+    for sim in simulations:
+        info = getattr(sim, "info", None) or {}
+        total_attempts += info.get("empty_user_response_attempts", 0)
+        fb = info.get("empty_user_response_fallbacks", 0)
+        if fb:
+            fallbacks.append(fb)
+    total_fallbacks = sum(fallbacks)
+    if total_attempts == 0 and total_fallbacks == 0:
+        return
+    msg = (
+        f"EMPTY_USER_MESSAGE summary: attempts(retries)={total_attempts} "
+        f"fallbacks={total_fallbacks} "
+        f"trajectories_with_fallback={len(fallbacks)}/{len(simulations)}"
+    )
+    if fallbacks:
+        msg += (
+            f" fallbacks_per_affected_traj(min/avg/max)="
+            f"{min(fallbacks)}/{total_fallbacks / len(fallbacks):.2f}/{max(fallbacks)}"
+        )
+    print(msg, file=sys.stderr, flush=True)
 
 
 # =============================================================================
@@ -858,6 +902,9 @@ def run_domain(config: RunConfig) -> Results:
     """
     config.validate()
     ConsoleDisplay.display_run_config(config)
+
+    if isinstance(config, VoiceRunConfig):
+        warn_if_non_official_voices()
 
     # Load tasks
     task_set_name = config.task_set_name or config.domain

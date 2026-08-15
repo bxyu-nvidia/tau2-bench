@@ -10,12 +10,18 @@ from rich.prompt import Confirm, Prompt
 from tau2.config import VOICE_USER_SIMULATOR_VERSION
 from tau2.data_model.simulation import Results as TrajectoryResults
 from tau2.metrics.agent_metrics import AgentMetrics, compute_metrics
+from tau2.scripts.leaderboard.compute_interaction_metrics import (
+    build_interaction_metrics_block,
+    compute_metrics_for_loaded_results,
+)
 from tau2.scripts.leaderboard.submission import (
     SUBMISSION_FILE_NAME,
     TRAJECTORY_FILES_DIR_NAME,
     ContactInfo,
     DomainResults,
+    InteractionMetrics,
     Methodology,
+    ModelRelease,
     Reference,
     Results,
     Submission,
@@ -541,6 +547,7 @@ def prepare_submission(
     console.print("\n📊 Computing metrics...", style="bold blue")
     domain_metrics: dict[str, AgentMetrics] = {}
     domain_results: dict[str, DomainResults] = {}
+    interaction_domain_metrics: dict[str, dict] = {}
     default_model = None
     default_user_simulator = None
     voice_config: Optional[VoiceConfig] = None
@@ -570,6 +577,12 @@ def prepare_submission(
             # Compute metrics for this trajectory file
             metrics = compute_metrics(results)
             domain_metrics[domain] = metrics
+
+            # Compute voice interaction metrics from the tick-level data
+            if is_voice:
+                interaction_domain_metrics[domain] = compute_metrics_for_loaded_results(
+                    results
+                )
 
             # Create DomainResults object
             def _pct(val: float | None) -> float | None:
@@ -651,6 +664,14 @@ def prepare_submission(
         default="standard",
     )
 
+    reasoning_effort = (
+        Prompt.ask(
+            "Reasoning effort level (e.g. high, medium, low, none, enabled)",
+            default="",
+        )
+        or None
+    )
+
     # Methodology information
     console.print("\n🔬 Methodology information:", style="dim")
     evaluation_date_str = Prompt.ask(
@@ -711,6 +732,49 @@ def prepare_submission(
         )
         references.append(Reference(title=ref_title, url=ref_url, type=ref_type))
         add_reference = Confirm.ask("Add another reference?", default=False)
+
+    # Model release info (optional)
+    console.print(
+        "\n📅 Model release info (optional, used to track progress over time):",
+        style="dim",
+    )
+    model_release: Optional[ModelRelease] = None
+    release_date_str = (
+        Prompt.ask(
+            "Model public release date (YYYY-MM-DD, distinct from evaluation date)",
+            default="",
+        )
+        or None
+    )
+    release_date_value: Optional[date] = None
+    if release_date_str:
+        try:
+            release_date_value = date.fromisoformat(release_date_str)
+        except ValueError:
+            console.print(
+                "  ⚠️  Invalid release date format, skipping model_release.",
+                style="yellow",
+            )
+            release_date_value = None
+
+    if release_date_value is not None:
+        announcement_url = (
+            Prompt.ask(
+                "Announcement URL (blog post, paper, model card, etc.)",
+                default="",
+            )
+            or None
+        )
+        announcement_title = None
+        if announcement_url:
+            announcement_title = (
+                Prompt.ask("Announcement title (link text in UI)", default="") or None
+            )
+        model_release = ModelRelease(
+            release_date=release_date_value,
+            announcement_url=announcement_url,
+            announcement_title=announcement_title,
+        )
 
     # Create submission objects
     contact_info = ContactInfo(email=email, name=contact_name, github=github_username)
@@ -800,6 +864,12 @@ def prepare_submission(
             trajectory_files_map[domain] = dest_name
 
     # Step 7: Write submission.json (after copy so trajectory_files_map is final)
+    interaction_metrics = None
+    if interaction_domain_metrics:
+        interaction_metrics = InteractionMetrics.model_validate(
+            build_interaction_metrics_block(interaction_domain_metrics)
+        )
+
     submission = Submission(
         model_name=model_name,
         model_organization=model_organization,
@@ -815,6 +885,9 @@ def prepare_submission(
         references=references if references else None,
         methodology=methodology,
         voice_config=voice_config,
+        interaction_metrics=interaction_metrics,
+        reasoning_effort=reasoning_effort,
+        model_release=model_release,
     )
 
     submission_file = submission_dir / SUBMISSION_FILE_NAME
