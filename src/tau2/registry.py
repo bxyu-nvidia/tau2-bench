@@ -18,9 +18,18 @@ from tau2.data_model.tasks import Task
 from tau2.domains.airline.environment import (
     get_environment as airline_domain_get_environment,
 )
+from tau2.domains.airline.environment import (
+    get_environment_anthropic as airline_domain_get_environment_anthropic,
+)
 from tau2.domains.airline.environment import get_tasks as airline_domain_get_tasks
 from tau2.domains.airline.environment import (
+    get_tasks_anthropic as airline_domain_get_tasks_anthropic,
+)
+from tau2.domains.airline.environment import (
     get_tasks_split as airline_domain_get_tasks_split,
+)
+from tau2.domains.airline.environment import (
+    get_tasks_split_anthropic as airline_domain_get_tasks_split_anthropic,
 )
 from tau2.domains.banking_knowledge.environment import (
     get_environment as knowledge_domain_get_environment,
@@ -318,6 +327,15 @@ try:
         airline_domain_get_tasks,
         "airline",
         get_task_splits=airline_domain_get_tasks_split,
+    )
+
+    registry.register_domain(
+        airline_domain_get_environment_anthropic, "airline-anthropic"
+    )
+    registry.register_tasks(
+        airline_domain_get_tasks_anthropic,
+        "airline-anthropic",
+        get_task_splits=airline_domain_get_tasks_split_anthropic,
     )
 
     registry.register_domain(retail_domain_get_environment, "retail")
