@@ -12,10 +12,11 @@ from typing import Any, Optional
 
 import httpx
 import litellm
-from litellm import completion, completion_cost
+from litellm import completion_cost
 from litellm.caching.caching import Cache
 from litellm.main import ModelResponse, Usage
 from loguru import logger
+from nemo_gym.openai_utils import NeMoGymAsyncOpenAI
 
 from tau2.config import (
     DEFAULT_LLM_CACHE_TYPE,
@@ -39,8 +40,6 @@ from tau2.data_model.message import (
     UserMessage,
 )
 from tau2.environment.tool import Tool
-
-from nemo_gym.openai_utils import NeMoGymAsyncOpenAI
 
 # Suppress Pydantic serialization warnings from LiteLLM
 # These occur due to type mismatches between streaming and non-streaming response types
@@ -167,9 +166,59 @@ def to_tau2_messages(
     return tau2_messages
 
 
-def to_litellm_messages(messages: list[Message]) -> list[dict]:
+def _split_leading_think(content: Optional[str]) -> tuple[Optional[str], Optional[str]]:
+    """Split one leading think block, preserving the visible content verbatim."""
+    if content is None:
+        return None, None
+    if not content.startswith("<think>"):
+        if "<think>" in content or "</think>" in content:
+            raise ValueError("Assistant visible content contains a think delimiter")
+        return None, content
+    end = content.find("</think>", len("<think>"))
+    if end < 0:
+        raise ValueError("Assistant response has an unterminated leading think block")
+    reasoning = content[len("<think>") : end]
+    visible = content[end + len("</think>") :]
+    if "<think>" in reasoning or "</think>" in reasoning:
+        raise ValueError("Assistant reasoning contains a think delimiter")
+    if "<think>" in visible or "</think>" in visible:
+        raise ValueError("Assistant visible content contains a think delimiter")
+    return reasoning, visible
+
+
+def _replay_reasoning_in_content(reasoning: str, content: Optional[str]) -> str:
+    """Encode reasoning for Gym's assistant-history parser."""
+    if not isinstance(reasoning, str):
+        raise TypeError("Assistant reasoning must be a string")
+    if "<think>" in reasoning or "</think>" in reasoning:
+        raise ValueError("Assistant reasoning contains a think delimiter")
+    if content is not None and ("<think>" in content or "</think>" in content):
+        raise ValueError("Assistant visible content contains a think delimiter")
+    return f"<think>{reasoning}</think>{content or ''}"
+
+
+def _assistant_reasoning(message: AssistantMessage) -> Optional[str]:
+    """Read reasoning captured in a prior assistant model response."""
+    choices = (message.raw_data or {}).get("choices") or [{}]
+    raw_message = choices[0].get("message") or {}
+    legacy = raw_message.get("reasoning_content")
+    current = raw_message.get("reasoning")
+    if legacy is not None and current is not None and legacy != current:
+        raise ValueError("Assistant reasoning and reasoning_content disagree")
+    reasoning = legacy if legacy is not None else current
+    if reasoning is not None and not isinstance(reasoning, str):
+        raise TypeError("Assistant reasoning must be a string")
+    return reasoning or None
+
+
+def to_litellm_messages(
+    messages: list[Message], replay_reasoning: bool = False
+) -> list[dict]:
     """
     Convert a list of Tau2 messages to a list of litellm messages.
+
+    Opt-in reasoning replay encodes each assistant trace as a leading think
+    block in content. Gym extracts that block before forwarding to the model.
     """
     litellm_messages = []
     for message in messages:
@@ -190,10 +239,20 @@ def to_litellm_messages(messages: list[Message]) -> list[dict]:
                     }
                     for tc in message.tool_calls
                 ]
+            content = message.content
+            reasoning = _assistant_reasoning(message) if replay_reasoning else None
+            if (
+                replay_reasoning
+                and content is not None
+                and ("<think>" in content or "</think>" in content)
+            ):
+                raise ValueError("Assistant visible content contains a think delimiter")
+            if reasoning:
+                content = _replay_reasoning_in_content(reasoning, content)
             litellm_messages.append(
                 {
                     "role": "assistant",
-                    "content": message.content,
+                    "content": content,
                     "tool_calls": tool_calls,
                 }
             )
@@ -360,6 +419,7 @@ async def generate(
     tools: Optional[list[Tool]] = None,
     tool_choice: Optional[str] = None,
     call_name: Optional[str] = None,
+    replay_reasoning: bool = False,
     **kwargs: Any,
 ) -> UserMessage | AssistantMessage:
     """
@@ -373,6 +433,8 @@ async def generate(
         call_name: Optional name identifying the purpose of this LLM call
                    (e.g., "detect_interrupt", "generate_agent_message").
                    Used for logging and debugging.
+        replay_reasoning: Replay prior assistant reasoning in model requests.
+                   Set only for the policy agent; disabled by default.
         **kwargs: Additional arguments to pass to the model.
 
     Returns: A tuple containing the message and the cost.
@@ -387,7 +449,7 @@ async def generate(
     ):
         os.environ["VERTEXAI_LOCATION"] = "global"
 
-    litellm_messages = to_litellm_messages(messages)
+    litellm_messages = to_litellm_messages(messages, replay_reasoning=replay_reasoning)
     tools_schema = [tool.openai_schema for tool in tools] if tools else None
     if tools_schema and tool_choice is None:
         tool_choice = "auto"
@@ -424,15 +486,25 @@ async def generate(
         logger.error(e)
         raise e
 
-    # The Tau2 default will never propogate things like reasoning from vLLM servers
-    # We explicitly strip the reasoning from Gym side here
-    content: Optional[str] = response["choices"][0]["message"]["content"]
-    reasoning_content: Optional[str] = None
-    if content is not None and "</think>" in content:
+    response_message = response["choices"][0]["message"]
+    content: Optional[str] = response_message["content"]
+    if replay_reasoning:
+        leading_reasoning, visible = _split_leading_think(content)
+        if leading_reasoning is not None:
+            for field in ("reasoning_content", "reasoning"):
+                existing = response_message.get(field)
+                if existing is not None and existing != leading_reasoning:
+                    raise ValueError(
+                        f"Assistant {field} disagrees with leading think block"
+                    )
+            response_message["content"] = visible
+            response_message["reasoning_content"] = leading_reasoning
+    elif content is not None and "</think>" in content:
+        # Preserve Tau2's existing extraction when replay is disabled.
         new_content = content.rsplit("</think>", maxsplit=1)[1]
-        reasoning_content = content[:-len(new_content)]
-        response["choices"][0]["message"]["content"] = new_content.strip()
-        response["choices"][0]["message"]["reasoning_content"] = reasoning_content
+        reasoning_content = content[: -len(new_content)]
+        response_message["content"] = new_content.strip()
+        response_message["reasoning_content"] = reasoning_content
 
     response = ModelResponse.model_validate(response)
 
